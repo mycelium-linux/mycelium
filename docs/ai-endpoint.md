@@ -88,7 +88,7 @@ cannot take over traffic that a local backend can serve. When it is used, the
 request goes to that peer, so the usual gossip trust applies: only advertise and
 accept leases from nodes you would route prompts to.
 
-## Models and capacity: facts in the mesh, numbers in the adapter
+## Models and capacity: claims in the mesh, counters in the adapter
 
 A node that serves a model advertises it — and the limit it enforces — on its
 `ai` service observation, in the open `attributes` bag the observation already
@@ -114,6 +114,9 @@ only that process knows its GPU memory, KV cache and scheduler.
 2. If the conversation has a live sticky node below `max_in_flight`, use it.
 3. Otherwise take the least loaded of the filtered candidates; ties follow the
    existing order (this machine, this node's leases, peer leases, the edge).
+   Load is the gateway's own tally of what it has in flight, so it undercounts
+   traffic from another gateway or a direct caller — which is why the node's
+   `overloaded` answer, not the tally, decides whether a request is admitted.
 4. `overloaded` is a terminal answer for the request, not a routing failure.
    The caller retries; the gateway does not advance to another node mid
    conversation, because replaying a completion can duplicate billed work and
