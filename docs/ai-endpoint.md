@@ -88,6 +88,49 @@ cannot take over traffic that a local backend can serve. When it is used, the
 request goes to that peer, so the usual gossip trust applies: only advertise and
 accept leases from nodes you would route prompts to.
 
+## Models and capacity: facts in the mesh, numbers in the adapter
+
+A node that serves a model advertises it — and the limit it enforces — on its
+`ai` service observation, in the open `attributes` bag the observation already
+carries:
+
+| attribute | meaning |
+| --- | --- |
+| `models` | model ids this node serves, comma-separated (`ornith-9b`) |
+| `max_in_flight` | requests it admits at once |
+| `tokens_per_sec` | optional: the rate it meters to |
+
+The mesh does not queue, proxy or admit. It publishes what each node says about
+itself, and the gateway derives candidates from it exactly as it already derives
+candidate order from leases. Admission stays in the node's adapter —
+`umie-serve`, Bifrost, or anything else that speaks the OpenAI surface — because
+only that process knows its GPU memory, KV cache and scheduler.
+
+### Choosing a node
+
+1. Filter to candidates whose `models` contains the requested model: an
+   `ornith-122b` request never lands on a 9B box, and a 9B request never
+   displaces the 122B.
+2. If the conversation has a live sticky node below `max_in_flight`, use it.
+3. Otherwise take the least loaded of the filtered candidates; ties follow the
+   existing order (this machine, this node's leases, peer leases, the edge).
+4. `overloaded` is a terminal answer for the request, not a routing failure.
+   The caller retries; the gateway does not advance to another node mid
+   conversation, because replaying a completion can duplicate billed work and
+   throws away the cache the affinity exists for.
+
+### Stickiness
+
+`prompt_cache_key` (scoped by Bifrost to the authenticated identity) or a
+caller-supplied `x-session-id` is the sticky key. The gateway maps it to a node
+and keeps the mapping for the conversation; only a connection failure advances
+it. The mapping is per gateway process — a restart costs a cache miss, not
+correctness — and the key is never a metric label.
+
+This is the split used elsewhere in the fleet: the mesh carries the map, the
+adapter owns its numbers, and the hop every request already crosses makes the
+choice.
+
 ## Token accounting
 
 The frontdoor is the only hop every client shares, so it is where usage is counted.
