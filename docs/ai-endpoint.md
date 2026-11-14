@@ -100,39 +100,66 @@ carries:
 | `max_in_flight` | requests it admits at once |
 | `tokens_per_sec` | optional: the rate it meters to |
 
-The mesh does not queue, proxy or admit. It publishes what each node says about
-itself, and the gateway derives candidates from it exactly as it already derives
-candidate order from leases. Admission stays in the node's adapter —
-`umie-serve`, Bifrost, or anything else that speaks the OpenAI surface — because
-only that process knows its GPU memory, KV cache and scheduler.
+The mesh does not queue, proxy or admit, and it does not choose. It publishes
+what each node says about itself. **Bifrost owns inference**
+([authority](authority.md), [scope audit](scope-audit.md)), so Bifrost is what
+filters by model, admits or refuses, and keeps a conversation on a node.
 
-### Choosing a node
+### Who reads the claims
 
-1. Filter to candidates whose `models` contains the requested model: an
+Bifrost should learn its uplinks the way the [iroh contract](iroh-discovery.md)
+already tells applications to: run `mycelium services --json` (schema 1), select
+fresh `kind: "ai"` observations, and fence the result by generation so a failed
+read holds the last set instead of downgrading to an empty catalog. Whether
+Bifrost reads that directly or a small adapter feeds it, the claims are input and
+the routing stays Bifrost's.
+
+That is why `ai.myc` is a *configured* route to the local Bifrost and not a
+catalog-derived one. A configured route owns its hostname, and the catalog only
+fills names nothing in `routes.json` claims
+(`RouteTable::set_discovered`). Traffic that reached a box without passing
+Bifrost would have no model filter and no admission, so the default name should
+not resolve that way.
+
+### Choosing a node (Bifrost)
+
+1. Filter to uplinks whose `models` contains the requested model: an
    `ornith-122b` request never lands on a 9B box, and a 9B request never
    displaces the 122B.
-2. If the conversation has a live sticky node below `max_in_flight`, use it.
-3. Otherwise take the least loaded of the filtered candidates; ties follow the
-   existing order (this machine, this node's leases, peer leases, the edge).
-   Load is the gateway's own tally of what it has in flight, so it undercounts
-   traffic from another gateway or a direct caller — which is why the node's
-   `overloaded` answer, not the tally, decides whether a request is admitted.
-4. `overloaded` is a terminal answer for the request, not a routing failure.
-   The caller retries; the gateway does not advance to another node mid
-   conversation, because replaying a completion can duplicate billed work and
-   throws away the cache the affinity exists for.
+2. A conversation with a live sticky uplink below `max_in_flight` keeps it.
+3. Otherwise the least loaded filtered uplink; ties follow candidate order
+   (this machine, this node's leases, peer leases, the edge). Bifrost's own
+   in-flight tally undercounts direct callers, which is why the uplink's
+   `overloaded` answer, not the tally, decides admission.
+4. `overloaded` is terminal for the request, not a signal to advance mid
+   conversation: replaying a completion can duplicate billed work and throws
+   away the cache the affinity exists for.
 
-### Stickiness
+### The cookie is Bifrost's
+
+Bifrost terminates the request, so Bifrost sets the affinity cookie. The
+gateway must not, and does not: it is a name resolver that also proxies, and
+teaching it conversation semantics for one of its names would put inference
+policy in the component that also serves `mcp.myc`, `files.myc` and `store.myc`.
+
+The hop is transparent today — the gateway forwards `Cookie` upstream and copies
+`Set-Cookie` back unchanged, dropping only hop-by-hop headers — so affinity
+crosses it intact. Keep it that way: a header allowlist added for some other
+reason would break affinity silently, which is why the contract is written down
+here rather than left implied by a `matches!`.
 
 `prompt_cache_key` (scoped by Bifrost to the authenticated identity) or a
-caller-supplied `x-session-id` is the sticky key. The gateway maps it to a node
-and keeps the mapping for the conversation; only a connection failure advances
-it. The mapping is per gateway process — a restart costs a cache miss, not
-correctness — and the key is never a metric label.
+caller-supplied `x-session-id` is the sticky key. Whatever Bifrost puts in the
+cookie carries the choice between requests; the key itself is never a metric
+label.
 
-This is the split used elsewhere in the fleet: the mesh carries the map, the
-adapter owns its numbers, and the hop every request already crosses makes the
-choice.
+### When Bifrost is not in the path
+
+A node that advertises `ai` earns a derived route only when `routes.json` claims
+nothing for its name. That path resolves the name to the uplinks the catalog
+names and does no balancing, no affinity and no admission. It is a way to reach
+one server, not a router: two model servers behind a derived name is a
+configuration mistake, not something the gateway should paper over.
 
 ## Token accounting
 
