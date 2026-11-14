@@ -103,9 +103,9 @@ impl SshSession {
         let user = creds
             .username()
             .ok_or_else(|| auth_err("edgeos driver requires a username"))?;
-        // An Env secret whose variable is unset resolves to None; auth then
-        // fails loudly with the list of tried methods.
-        let password = creds.password.as_ref().and_then(Secret::resolve);
+        // A secret that cannot be resolved is an authentication failure; it never
+        // becomes an anonymous connection.
+        let password = creds.password.as_ref().map(Secret::resolve).transpose()?;
 
         let jump = jump.filter(|j| !j.is_empty());
         if jump.is_some() || (creds.key_path.is_none() && password.is_none()) {
@@ -200,7 +200,12 @@ fn is_dead_session(e: &MyceliumError) -> bool {
 }
 
 async fn reconnect(native: &mut Native) -> Result<()> {
-    let password = native.creds.password.as_ref().and_then(Secret::resolve);
+    let password = native
+        .creds
+        .password
+        .as_ref()
+        .map(Secret::resolve)
+        .transpose()?;
     let user = native
         .creds
         .username()

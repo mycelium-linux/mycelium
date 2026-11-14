@@ -30,6 +30,7 @@ boundary and is revealed through a short, purpose-scoped lease.
 | --- | --- | --- |
 | `MemoryBackend` | implemented | Tests and in-process composition. |
 | `EnvBackend` | implemented | Read-only developer backend with a fixed purpose allowlist. |
+| `geoded` broker client | implemented | `BrokerClient` leases over a running daemon's `0600` Unix socket; no backend is linked into the caller. |
 | macOS Keychain | not implemented | Planned: `dev.fungos.geode`, `WhenUnlockedThisDeviceOnly`, no iCloud sync. |
 | Linux Secret Service | not implemented | Planned for desktop hosts. |
 | `systemd-creds` / TPM | not implemented | Planned for headless fungOS hosts; see `docs/hardware-key-protection.md`. |

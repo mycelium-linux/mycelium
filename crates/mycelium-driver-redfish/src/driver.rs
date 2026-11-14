@@ -90,14 +90,15 @@ impl RedfishHandle {
             .username
             .as_deref()
             .ok_or_else(|| MyceliumError::Auth("iLO username is unavailable".into()))?;
+        // A secret that cannot be read is an authentication failure, never an
+        // anonymous request.
         let password = self
             .credentials
             .password
             .as_ref()
-            .and_then(Secret::resolve)
-            .ok_or_else(|| {
-                MyceliumError::Auth("iLO password environment variable is unavailable".into())
-            })?;
+            .map(Secret::resolve)
+            .transpose()?
+            .ok_or_else(|| MyceliumError::Auth("iLO password is unavailable".into()))?;
         Ok(request.basic_auth(username, Some(password)))
     }
 

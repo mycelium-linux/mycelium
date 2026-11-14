@@ -1,5 +1,13 @@
 use mycelium_core::{CredentialRef, CredentialSet, MyceliumError, Secret};
 
+/// Purpose the daemon leases a geode credential under.
+///
+/// An operator enrolls the entry with this purpose
+/// (`geoded --put geode://<realm>/<account>/<slot> --purpose mycelium.login`).
+/// The store denies every other purpose, so holding a reference is not by itself
+/// a capability to read the secret.
+pub const GEODE_PURPOSE: &str = "mycelium.login";
+
 /// Resolve a non-secret reference into the legacy driver credential shape.
 /// This function lives in myceliumd so CLI clients and persisted plans never
 /// receive resolved secret material.
@@ -16,12 +24,14 @@ pub fn resolve(
         "env" => credentials.password = Some(Secret::Env(reference.location().into())),
         "ssh-key" => credentials.key_path = Some(reference.location().into()),
         "geode" => {
-            // The reference is valid, but this host has no geode backend wired
-            // in yet. Fail closed rather than falling back to env or a file.
-            return Err(MyceliumError::Validation(
-                "geode credential references need a configured geode backend; none is configured on this host"
-                    .into(),
-            ));
+            // Resolution stays lazy: the daemon carries the reference and the
+            // driver leases it from the owner-local broker at use time. No
+            // backend is selected implicitly, and there is no plaintext or env
+            // fallback.
+            credentials.password = Some(Secret::Geode {
+                reference: reference.clone(),
+                purpose: GEODE_PURPOSE.into(),
+            });
         }
         provider => {
             return Err(MyceliumError::Validation(format!(
@@ -48,9 +58,20 @@ mod tests {
     }
 
     #[test]
-    fn geode_references_fail_closed_without_a_backend() {
+    fn geode_references_stay_lazy_and_name_their_purpose() {
         let reference = CredentialRef::parse("geode://mail/work/imap").unwrap();
-        let error = resolve(&reference, None).unwrap_err();
-        assert!(error.to_string().contains("configured geode backend"));
+        let credentials = resolve(&reference, None).unwrap();
+        match &credentials.password {
+            Some(Secret::Geode {
+                reference: carried,
+                purpose,
+            }) => {
+                assert_eq!(carried, &reference);
+                assert_eq!(purpose, GEODE_PURPOSE);
+            }
+            other => panic!("expected a geode secret, got {other:?}"),
+        }
+        // The reference is carried, not resolved: no broker was contacted.
+        assert!(credentials.username().is_none());
     }
 }

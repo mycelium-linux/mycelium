@@ -4,6 +4,10 @@
 adapters in other processes (Unibus mail/chat bridges, drivers) can resolve a
 `geode://` reference without linking geode or reading a plaintext file.
 
+Clients use `geode::BrokerClient`, which speaks the protocol below and nothing
+else. `myceliumd` is one: it leases device credentials under the `mycelium.login`
+purpose (see [geode](geode.md#consumers)).
+
 ## Broker, not a vault
 
 - Socket mode `0600`; every accepted connection is checked for the **same UID**
@@ -47,6 +51,9 @@ geoded --socket ~/.geode/geode.sock --store ~/.geode/store.db \
 - Same-UID isolation only. Another process as the same user can connect.
 - One writer process. The backend serializes in-process; do not run two daemons
   against the same store.
+- A running daemon holds the store in memory, so `--put` from a second process is
+  not visible until `geoded` restarts. Enroll while the service is stopped, or
+  restart `dev.fpl.geoded` afterwards.
 - Read-only over the socket. Rotation/revocation is an operator command today.
 
 ## Next

@@ -91,10 +91,9 @@ impl ControllerHandle {
             .credentials
             .password
             .as_ref()
-            .and_then(Secret::resolve)
-            .ok_or_else(|| {
-                MyceliumError::Auth("controller password environment is unset".into())
-            })?;
+            .map(Secret::resolve)
+            .transpose()?
+            .ok_or_else(|| MyceliumError::Auth("controller password is unavailable".into()))?;
         let response = self
             .client
             .post(format!("{}/api/login", self.base))

@@ -41,19 +41,9 @@ impl SnmpDriver {
     ///   write community (snmp.set needs it; switches rarely split them)
     fn handle(&self, target: &Target, creds: &CredentialSet) -> Result<SnmpHandle> {
         let endpoint = host_target(target, DEFAULT_SNMP_PORT, "SNMP probe")?;
-        let resolved_password = creds
-            .password
-            .as_ref()
-            .map(|secret| {
-                secret.resolve().ok_or_else(|| {
-                    let name = match secret {
-                        Secret::Env(name) => name.as_str(),
-                        Secret::Literal(_) => "literal secret",
-                    };
-                    MyceliumError::Auth(format!("SNMP community `{name}` is unavailable"))
-                })
-            })
-            .transpose()?;
+        // Resolving the community fails loudly: a secret that cannot be read must
+        // not turn into an unauthenticated probe.
+        let resolved_password = creds.password.as_ref().map(Secret::resolve).transpose()?;
         let (read, write) = match (&creds.username, resolved_password) {
             (Some(u), pw) => (u.clone(), pw),
             (None, Some(pw)) => (pw.clone(), Some(pw)),

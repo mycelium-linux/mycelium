@@ -17,6 +17,7 @@
 
 mod audit;
 mod backend;
+mod broker;
 mod clock;
 mod error;
 mod lease;
@@ -28,6 +29,7 @@ pub use audit::{AuditEvent, AuditLog, AuditOutcome, DenyReason};
 pub use backend::{
     Backend, EnvBackend, FileBackend, MemoryBackend, StoredRecord, UnsupportedBackend,
 };
+pub use broker::{BrokerClient, DEFAULT_LEASE, DEFAULT_SOCKET};
 pub use clock::{Clock, ManualClock, SharedClock, SystemClock};
 pub use error::GeodeError;
 pub use lease::Lease;

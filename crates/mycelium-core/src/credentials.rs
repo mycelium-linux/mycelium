@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 /// - `geode://<realm>/<account>/<slot>` — an owner-local geode credential.
 ///
 /// A valid reference is not a promise that this host can resolve it. `geode`
-/// references require a configured geode backend; without one, resolution fails
-/// closed instead of falling back to another provider.
+/// references are leased at use time from the owner-local `geoded` broker
+/// (`GEODE_SOCKET`, or `$HOME/.geode/geode.sock`); without a reachable broker the
+/// read fails closed instead of falling back to another provider.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CredentialRef(String);
@@ -101,14 +102,38 @@ impl From<CredentialRef> for String {
 
 /// Credentials a driver may use against an appliance.
 ///
-/// Secrets are redacted in every display path, and resolution is lazy:
-/// an `Env` value is read at use time so nothing sensitive is cached in
-/// long-lived structures or serialized to disk.
+/// Secrets are redacted in every display path, and resolution is lazy: an `Env`
+/// value is read at use time and a `Geode` value is leased at use time, so
+/// nothing sensitive is cached in long-lived structures or serialized to disk.
+/// `Geode` carries only the reference and the purpose it will be leased under;
+/// both are non-secret.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Secret {
     Literal(String),
     Env(String),
+    Geode {
+        reference: CredentialRef,
+        purpose: String,
+    },
+}
+
+/// Why a lazy secret could not be resolved.
+///
+/// Drivers treat this as an authentication failure. A secret that cannot be read
+/// is never replaced by an unauthenticated attempt.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SecretError {
+    #[error("environment variable `{0}` is not set")]
+    UnsetEnv(String),
+    #[error("geode reference `{reference}` could not be leased: {reason}")]
+    Geode { reference: String, reason: String },
+}
+
+impl From<SecretError> for crate::MyceliumError {
+    fn from(error: SecretError) -> Self {
+        crate::MyceliumError::Auth(error.to_string())
+    }
 }
 
 impl std::fmt::Debug for Secret {
@@ -117,17 +142,44 @@ impl std::fmt::Debug for Secret {
         match self {
             Secret::Literal(_) => f.write_str("Secret(***redacted***)"),
             Secret::Env(var) => write!(f, "Secret(env:{var})"),
+            Secret::Geode { reference, purpose } => {
+                write!(f, "Secret(geode:{} as {purpose})", reference.as_str())
+            }
         }
     }
 }
 
 impl Secret {
-    pub fn resolve(&self) -> Option<String> {
+    /// Resolve to the secret value at the moment of use.
+    ///
+    /// Every failure is reported rather than folded into "no credential", so a
+    /// driver cannot silently retry without authentication.
+    pub fn resolve(&self) -> Result<String, SecretError> {
         match self {
-            Secret::Literal(s) => Some(s.clone()),
-            Secret::Env(var) => std::env::var(var).ok(),
+            Secret::Literal(value) => Ok(value.clone()),
+            Secret::Env(var) => std::env::var(var).map_err(|_| SecretError::UnsetEnv(var.clone())),
+            Secret::Geode { reference, purpose } => lease_from_geode(reference, purpose),
         }
     }
+}
+
+/// Lease through the owner-local broker. The daemon never links a geode backend
+/// or reads the store: the broker holds the key and the purpose allowlist.
+fn lease_from_geode(reference: &CredentialRef, purpose: &str) -> Result<String, SecretError> {
+    let denied = |reason: String| SecretError::Geode {
+        reference: reference.as_str().to_owned(),
+        reason,
+    };
+    let typed = reference
+        .as_geode()
+        .ok_or_else(|| denied("not a geode reference".into()))?;
+    let purpose = geode::Purpose::parse(purpose).map_err(|error| denied(error.to_string()))?;
+    let client = geode::BrokerClient::from_env().map_err(|error| denied(error.to_string()))?;
+    let secret = client
+        .lease(&typed, &purpose, geode::DEFAULT_LEASE)
+        .map_err(|error| denied(error.to_string()))?;
+    String::from_utf8(secret.expose().to_vec())
+        .map_err(|_| denied("the brokered secret is not valid UTF-8".into()))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +221,54 @@ mod tests {
         let shown = format!("{creds:?}");
         assert!(!shown.contains("hunter2"));
         assert!(shown.contains("redacted"));
+    }
+
+    #[test]
+    fn geode_secrets_serialize_a_reference_not_a_value() {
+        let secret = Secret::Geode {
+            reference: CredentialRef::parse("geode://mail/work/imap").unwrap(),
+            purpose: "mycelium.login".into(),
+        };
+        let encoded = serde_json::to_string(&secret).unwrap();
+        assert!(encoded.contains("\"kind\":\"geode\""), "{encoded}");
+        assert!(encoded.contains("geode://mail/work/imap"), "{encoded}");
+        assert!(encoded.contains("mycelium.login"), "{encoded}");
+        assert_eq!(serde_json::from_str::<Secret>(&encoded).unwrap(), secret);
+
+        let shown = format!("{secret:?}");
+        assert!(shown.contains("geode://mail/work/imap"), "{shown}");
+        assert!(shown.contains("mycelium.login"), "{shown}");
+    }
+
+    #[test]
+    fn an_unset_environment_secret_fails_loudly() {
+        let secret = Secret::Env("MYCELIUM_TEST_VARIABLE_THAT_IS_NEVER_SET".into());
+        let error = secret.resolve().expect_err("an unset variable is an error");
+        assert!(
+            matches!(&error, SecretError::UnsetEnv(name) if name.contains("MYCELIUM_TEST")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_broker_fails_loudly() {
+        let socket = std::env::temp_dir().join(format!(
+            "geode-absent-{}-{:?}.sock",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::env::set_var("GEODE_SOCKET", &socket);
+        let secret = Secret::Geode {
+            reference: CredentialRef::parse("geode://mail/work/imap").unwrap(),
+            purpose: "mycelium.login".into(),
+        };
+        let error = secret.resolve().expect_err("an absent broker is an error");
+        std::env::remove_var("GEODE_SOCKET");
+        assert!(
+            matches!(&error, SecretError::Geode { reference, .. } if reference == "geode://mail/work/imap"),
+            "unexpected error: {error}"
+        );
+        assert!(error.to_string().contains("could not be leased"), "{error}");
     }
 
     #[test]

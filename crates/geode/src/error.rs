@@ -34,4 +34,6 @@ pub enum GeodeError {
     NotUtf8,
     #[error("backend refused the operation: {0}")]
     Backend(String),
+    #[error("geode broker: {0}")]
+    Broker(String),
 }

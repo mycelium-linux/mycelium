@@ -5,16 +5,11 @@
 //! the key to configuration or a log.
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use geode::{BrokerClient, GeodeRef, Purpose, DEFAULT_LEASE, DEFAULT_SOCKET};
 use geode_pgp::{verify_detached, PgpKey};
-use serde_json::{json, Value};
-
-const DEFAULT_SOCKET: &str = ".geode/geode.sock";
-const LEASE_TTL_MS: u64 = 5_000;
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -91,24 +86,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn load_key(args: &[String]) -> Result<PgpKey, String> {
-    let socket = socket_path(args)?;
-    let reference = required(args, "--reference")?;
-    let purpose = required(args, "--purpose")?;
-    let response = call(
-        &socket,
-        &json!({
-            "op": "lease",
-            "reference": reference,
-            "purpose": purpose,
-            "ttl_ms": LEASE_TTL_MS,
-        }),
-    )?;
-    let secret = response["secret_b64"]
-        .as_str()
-        .ok_or("geoded returned no key")?;
-    let secret = STANDARD
-        .decode(secret)
-        .map_err(|error| format!("invalid key response: {error}"))?;
+    let client = BrokerClient::new(socket_path(args)?);
+    let reference =
+        GeodeRef::parse(required(args, "--reference")?).map_err(|error| error.to_string())?;
+    let purpose =
+        Purpose::parse(required(args, "--purpose")?).map_err(|error| error.to_string())?;
+    let leased = client
+        .lease(&reference, &purpose, DEFAULT_LEASE)
+        .map_err(|error| error.to_string())?;
+    let secret = leased.expose().to_vec();
     let fingerprint = match named(args, "--fingerprint") {
         Some(fingerprint) => fingerprint.to_owned(),
         None => PgpKey::detect_fingerprint(&secret).map_err(|error| error.to_string())?,
@@ -138,29 +124,6 @@ fn message_bytes(args: &[String]) -> Result<Vec<u8>, String> {
         }
         Some(path) => std::fs::read(path).map_err(|error| format!("read {path}: {error}")),
     }
-}
-
-fn call(socket: &Path, request: &Value) -> Result<Value, String> {
-    let mut stream = UnixStream::connect(socket)
-        .map_err(|error| format!("connect {}: {error}", socket.display()))?;
-    let mut line = serde_json::to_vec(request).map_err(|error| error.to_string())?;
-    line.push(b'\n');
-    stream
-        .write_all(&line)
-        .map_err(|error| format!("write request: {error}"))?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| format!("read response: {error}"))?;
-    let value: Value =
-        serde_json::from_str(&response).map_err(|error| format!("invalid response: {error}"))?;
-    if value["ok"].as_bool() != Some(true) {
-        return Err(value["error"]
-            .as_str()
-            .unwrap_or("geode request failed")
-            .to_owned());
-    }
-    Ok(value)
 }
 
 fn named<'a>(args: &'a [String], name: &str) -> Option<&'a str> {

@@ -1575,9 +1575,7 @@ dependencies = [
 name = "geode-pgp"
 version = "0.1.3"
 dependencies = [
- "base64 0.22.1",
  "geode",
- "serde_json",
  "tempfile",
  "thiserror 2.0.21",
 ]
