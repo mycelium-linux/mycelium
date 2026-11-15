@@ -285,9 +285,14 @@ run_component() {
 }
 
 install_atomic() {
-    src=$1
-    dest=$2
-    mode=${3:-755}
+    # `local`: this function is called from functions that hold their own `src`
+    # (build_iroh_tun, install_bob_from, the release fetcher). Without it the
+    # second call inside such a caller computes its source from the first
+    # call's source, looks for `<binary>/target/release/iroh-tun` and fails with
+    # "missing binary" after the build that produced it succeeded.
+    local src=$1
+    local dest=$2
+    local mode=${3:-755}
     if [ "$DRY_RUN" = 1 ]; then
         note "would install $src -> $dest (mode $mode)"
         return 0
