@@ -340,4 +340,77 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    /// Live Linux canary. Run as root on a disposable host:
+    /// `MYCELIUM_LIVE_ACCOUNT_TEST=1 cargo test -p mycelium-cli \
+    ///  -- --ignored live_account_lifecycle --nocapture`
+    #[test]
+    #[ignore = "requires root on a disposable Linux host"]
+    fn live_account_lifecycle_is_disable_only() {
+        if std::env::var("MYCELIUM_LIVE_ACCOUNT_TEST").as_deref() != Ok("1") {
+            return;
+        }
+        assert!(cfg!(target_os = "linux"), "live account test is Linux-only");
+        let euid = Command::new("id").arg("-u").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&euid.stdout).trim(), "0");
+
+        let user = format!("mycelium-canary-{}", std::process::id());
+        assert!(
+            observe(&user).unwrap().is_none(),
+            "refusing to test with an existing account `{user}`"
+        );
+        let mut chosen = None;
+        for candidate in 4000u32..5000 {
+            let passwd = run_output("getent", &["passwd", &candidate.to_string()]).unwrap();
+            let group = run_output("getent", &["group", &candidate.to_string()]).unwrap();
+            if !passwd.status.success() && !group.status.success() {
+                chosen = Some(AccountId {
+                    uid: candidate,
+                    gid: candidate,
+                });
+                break;
+            }
+        }
+        let id = chosen.expect("no free uid/gid in the canary range");
+
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = Command::new("userdel").args(["-r", &self.0]).status();
+                let _ = Command::new("groupdel").arg(&self.0).status();
+            }
+        }
+        let _cleanup = Cleanup(user.clone());
+
+        let desired = BTreeMap::from([(user.clone(), Some(id))]);
+        let create = plan_for(&desired, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            create,
+            vec![Action::Create {
+                user: user.clone(),
+                id
+            }]
+        );
+        apply(&create).unwrap();
+        let created = observe(&user).unwrap().expect("account was created");
+        assert_eq!(created.id, id);
+        assert!(created.enabled);
+
+        let disable = plan_for(&BTreeMap::new(), &BTreeSet::from([user.clone()])).unwrap();
+        assert_eq!(disable, vec![Action::Disable { user: user.clone() }]);
+        apply(&disable).unwrap();
+        let disabled = observe(&user)
+            .unwrap()
+            .expect("disabled account is retained");
+        assert_eq!(disabled.id, id);
+        assert!(!disabled.enabled);
+
+        let enable = plan_for(&desired, &BTreeSet::from([user.clone()])).unwrap();
+        assert_eq!(enable, vec![Action::Enable { user: user.clone() }]);
+        apply(&enable).unwrap();
+        let reenabled = observe(&user).unwrap().expect("account is retained");
+        assert_eq!(reenabled.id, id);
+        assert!(reenabled.enabled);
+        eprintln!("live canary: created, disabled and re-enabled `{user}` as {id:?}");
+    }
 }
