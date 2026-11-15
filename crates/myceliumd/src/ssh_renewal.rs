@@ -428,6 +428,7 @@ mod tests {
                 roles: vec!["home-operator".into()],
                 scopes: vec![scope(&request.node_id, 3600).unwrap()],
                 unix_users: vec!["mames".into()],
+                unix_ids: Default::default(),
                 ssh_public_keys: vec![request.public_key.clone()],
                 oidc_audiences: vec![],
                 oidc_ssh_key_exchange: false,

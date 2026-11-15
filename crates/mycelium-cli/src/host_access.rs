@@ -1,7 +1,7 @@
 //! Linux host enforcement. Gossip is an untrusted carrier: privileged decisions
 //! are recomputed from signatures, root-owned trust configuration and local time.
 //! No peer identity or daemon-provided `active` flag conveys grant authority.
-use mycelium_peer_protocol::{AccessRecord, AccessStatement, AuthorityRecord};
+use mycelium_peer_protocol::{AccessRecord, AccessStatement, AuthorityRecord, UnixId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -25,9 +25,22 @@ pub(crate) struct Policy {
     #[serde(default)]
     sudo_roles: BTreeSet<String>,
     ca_public: String,
+    /// The host only accepts signed UID/GIDs inside this fleet-owned range.
+    #[serde(default = "default_unix_id_min")]
+    unix_id_min: u32,
+    #[serde(default = "default_unix_id_max")]
+    unix_id_max: u32,
     /// PAM account checks only; authentication stacks/passwords remain intact.
     #[serde(default)]
     pam_services: BTreeSet<String>,
+}
+
+fn default_unix_id_min() -> u32 {
+    3000
+}
+
+fn default_unix_id_max() -> u32 {
+    5999
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +49,8 @@ struct Plan {
     ssh_principals: BTreeMap<String, BTreeSet<String>>,
     sudo_users: BTreeSet<String>,
     managed_users: BTreeSet<String>,
+    /// Present only for accounts whose grant carries an authority-signed ID.
+    unix_ids: BTreeMap<String, UnixId>,
     sudoers: String,
     pam_access: String,
 }
@@ -67,6 +82,14 @@ fn validate(policy: &Policy) -> Result<(), String> {
     }
     if !Path::new(&policy.ca_public).is_absolute() {
         return Err("SSH CA public path must be absolute".into());
+    }
+    if policy.unix_id_min < 1000
+        || policy.unix_id_max < policy.unix_id_min
+        || policy.unix_id_max == u32::MAX
+    {
+        return Err(
+            "unix_id_min/unix_id_max must be a non-empty range starting at 1000 or above".into(),
+        );
     }
     for key in policy
         .authority_roots
@@ -146,6 +169,7 @@ fn derive(
         return Err("no verified access evidence; refusing host changes".into());
     }
     let mut accounts = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut unix_ids_out = BTreeMap::<String, UnixId>::new();
     let mut sudo_expiries = BTreeMap::<String, u64>::new();
     let mut ssh_principals = BTreeMap::<String, BTreeSet<String>>::new();
     let mut verified = Vec::new();
@@ -155,6 +179,7 @@ fn derive(
             principal,
             roles,
             unix_users,
+            unix_ids: grant_ids,
             not_before,
             not_after,
             ..
@@ -184,6 +209,58 @@ fn derive(
             .collect();
         if roles.is_empty() {
             continue;
+        }
+        for (user, id) in grant_ids {
+            if !unix_users.iter().any(|candidate| candidate == user) {
+                return Err(format!(
+                    "grant `{principal}` carries unix_ids for `{user}`, which is not a unix_user"
+                ));
+            }
+            if id.uid < policy.unix_id_min
+                || id.uid > policy.unix_id_max
+                || id.gid < policy.unix_id_min
+                || id.gid > policy.unix_id_max
+                || id.uid == u32::MAX
+                || id.gid == u32::MAX
+            {
+                return Err(format!(
+                    "grant `{principal}` gives `{user}` uid/gid {uid}:{gid}, outside the host's signed-ID range {min}..={max}",
+                    uid = id.uid,
+                    gid = id.gid,
+                    min = policy.unix_id_min,
+                    max = policy.unix_id_max
+                ));
+            }
+            if let Some((other, _)) = unix_ids_out
+                .iter()
+                .find(|(candidate, existing)| *candidate != user && existing.uid == id.uid)
+            {
+                return Err(format!(
+                    "signed uid {} is assigned to both `{other}` and `{user}`",
+                    id.uid
+                ));
+            }
+            if let Some((other, _)) = unix_ids_out
+                .iter()
+                .find(|(candidate, existing)| *candidate != user && existing.gid == id.gid)
+            {
+                return Err(format!(
+                    "signed gid {} is assigned to both `{other}` and `{user}`",
+                    id.gid
+                ));
+            }
+            match unix_ids_out.get(user) {
+                Some(existing) if existing != id => {
+                    return Err(format!(
+                        "conflicting signed uid/gid for `{user}`: {0}:{1} vs {2}:{3}",
+                        existing.uid, existing.gid, id.uid, id.gid
+                    ))
+                }
+                Some(_) => {}
+                None => {
+                    unix_ids_out.insert(user.clone(), *id);
+                }
+            }
         }
         for user in unix_users {
             atom(user)?;
@@ -248,6 +325,7 @@ fn derive(
             ssh_principals,
             sudo_users,
             managed_users,
+            unix_ids: unix_ids_out,
             sudoers,
             pam_access,
         },
@@ -449,14 +527,35 @@ pub fn run(args: &[String], access: &Value, authority: &Value) -> Result<Vec<Str
                 &policy,
                 &cached["access"],
                 &retained_authority,
-                previous,
+                previous.clone(),
                 now,
             )?
         }
     };
+    let desired: BTreeMap<String, Option<crate::host_accounts::AccountId>> = plan
+        .accounts
+        .keys()
+        .map(|user| {
+            (
+                user.clone(),
+                plan.unix_ids
+                    .get(user)
+                    .map(|id| crate::host_accounts::AccountId {
+                        uid: id.uid,
+                        gid: id.gid,
+                    }),
+            )
+        })
+        .collect();
     if action == "plan" || args.iter().any(|a| a == "--dry-run") {
+        let mut view = serde_json::to_value(&plan).map_err(|e| e.to_string())?;
+        if cfg!(target_os = "linux") {
+            view["account_actions"] =
+                serde_json::to_value(crate::host_accounts::plan_for(&desired, &previous)?)
+                    .map_err(|e| e.to_string())?;
+        }
         return Ok(vec![
-            serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?
         ]);
     }
     if !args.iter().any(|a| a == "--write") {
@@ -468,6 +567,13 @@ pub fn run(args: &[String], access: &Value, authority: &Value) -> Result<Vec<Str
     crate::ssh_access::require_root("host grant enforcement")?;
     protected(&std::env::current_exe().map_err(|e| e.to_string())?)?;
     protected(Path::new(&policy.ca_public))?;
+    // Apply account creation/enablement before the SSH bundle, and defer
+    // disablement until after principals, sudo and PAM have been replaced.
+    let account_actions = crate::host_accounts::plan_for(&desired, &previous)?;
+    let (enable_actions, disable_actions): (Vec<_>, Vec<_>) = account_actions
+        .into_iter()
+        .partition(|action| !matches!(action, crate::host_accounts::Action::Disable { .. }));
+    let account_log = crate::host_accounts::apply(&enable_actions)?;
     let base = Path::new("/var/lib/mycelium/access");
     protected(Path::new("/var/lib"))?;
     fs::create_dir_all(base).map_err(|e| e.to_string())?;
@@ -578,6 +684,7 @@ pub fn run(args: &[String], access: &Value, authority: &Value) -> Result<Vec<Str
         bundle.display().to_string(),
         "--write".into(),
         "--allow-empty".into(),
+        "--no-accounts".into(),
     ];
     for (user, roles) in &plan.accounts {
         for role in roles {
@@ -610,8 +717,12 @@ pub fn run(args: &[String], access: &Value, authority: &Value) -> Result<Vec<Str
         )?;
     }
     fs::remove_dir_all(&bundle).map_err(|e| format!("remove generated host bundle: {e}"))?;
+    let disable_log = crate::host_accounts::apply(&disable_actions)?;
     command("visudo", &["-c"])?;
-    Ok(vec![format!("verified grants applied: {} accounts, {} sudo users; PAM account policy updated (no passwords changed)", plan.accounts.len(), plan.sudo_users.len())])
+    let mut lines = vec![format!("verified grants applied: {} accounts, {} sudo users; PAM account policy updated (no passwords changed)", plan.accounts.len(), plan.sudo_users.len())];
+    lines.extend(account_log);
+    lines.extend(disable_log);
+    Ok(lines)
 }
 
 /// PAM account evaluation is offline and rechecks expiry at login/sudo time.
@@ -739,6 +850,8 @@ mod tests {
             accepted_roles: BTreeSet::from(["operator".into()]),
             sudo_roles: BTreeSet::new(),
             ca_public: "/etc/ssh/ca.pub".into(),
+            unix_id_min: 3000,
+            unix_id_max: 5999,
             pam_services: BTreeSet::new(),
         }
     }
@@ -802,6 +915,7 @@ mod tests {
                 roles: vec!["operator".into()],
                 scopes: vec![],
                 unix_users: vec!["mames".into()],
+                unix_ids: Default::default(),
                 ssh_public_keys: vec![],
                 oidc_audiences: vec![],
                 oidc_ssh_key_exchange: false,
@@ -995,6 +1109,99 @@ mod tests {
         assert!(plan.ssh_principals["mames"].is_disjoint(&sam_certificate));
         assert!(!plan.ssh_principals["sam"].is_disjoint(&sam_certificate));
     }
+    #[test]
+    fn signed_unix_ids_are_required_for_new_accounts_and_in_range() {
+        let (p, mut r) = signed_fixture();
+        if let AccessStatement::Grant { unix_ids, .. } = &mut r.statement {
+            unix_ids.insert(
+                "mames".into(),
+                UnixId {
+                    uid: 4001,
+                    gid: 4001,
+                },
+            );
+        }
+        r = AccessRecord::sign(
+            &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            r.statement,
+        )
+        .unwrap();
+        let (plan, _) = derive(
+            &p,
+            &snapshot(&r, true, vec![]),
+            &serde_json::json!([]),
+            BTreeSet::new(),
+            15,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.unix_ids["mames"],
+            UnixId {
+                uid: 4001,
+                gid: 4001
+            }
+        );
+
+        if let AccessStatement::Grant { unix_ids, .. } = &mut r.statement {
+            unix_ids.insert(
+                "mames".into(),
+                UnixId {
+                    uid: 7000,
+                    gid: 7000,
+                },
+            );
+        }
+        let r = AccessRecord::sign(
+            &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            r.statement,
+        )
+        .unwrap();
+        assert!(derive(
+            &p,
+            &snapshot(&r, true, vec![]),
+            &serde_json::json!([]),
+            BTreeSet::new(),
+            15,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn conflicting_signed_unix_ids_for_one_account_are_rejected() {
+        let (p, mut r) = signed_fixture();
+        if let AccessStatement::Grant { unix_ids, .. } = &mut r.statement {
+            unix_ids.insert(
+                "mames".into(),
+                UnixId {
+                    uid: 4001,
+                    gid: 4001,
+                },
+            );
+        }
+        let mut other = r.statement.clone();
+        if let AccessStatement::Grant {
+            grant_id, unix_ids, ..
+        } = &mut other
+        {
+            *grant_id = "second".into();
+            unix_ids.insert(
+                "mames".into(),
+                UnixId {
+                    uid: 4002,
+                    gid: 4002,
+                },
+            );
+        }
+        let other =
+            AccessRecord::sign(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]), other).unwrap();
+        let mut state = snapshot(&r, true, vec![]);
+        state["grants"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"active":true,"record":other}));
+        assert!(derive(&p, &state, &serde_json::json!([]), BTreeSet::new(), 15).is_err());
+    }
+
     #[test]
     fn sudo_lease_is_grant_clamped_and_bounded_when_timer_stops() {
         let (p, mut r) = signed_fixture();

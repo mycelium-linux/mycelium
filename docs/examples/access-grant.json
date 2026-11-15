@@ -6,6 +6,9 @@
   "roles": ["operator"],
   "scopes": ["site:wagar-house", "site:lab"],
   "unix_users": ["avery"],
+  "unix_ids": {
+    "avery": {"uid": 4001, "gid": 4001}
+  },
   "ssh_public_keys": [
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEexampleReplaceWithTheExactAuthorizedPublicKey"
   ],

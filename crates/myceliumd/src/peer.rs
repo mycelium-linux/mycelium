@@ -16,7 +16,7 @@ use mycelium_peer_protocol::{
     HardwareSnapshot, HostHealth, PackageManifest, PeerEndpointObservation, PeerEvent, PeerHello,
     PeerInterface, PeerMessage, Platform, ProcessHealth, ReleaseManifest, SecurityEventBatch,
     SecurityPosture, SignedEnvelope, TopologySnapshot, TransportCredentialBinding, TransportKind,
-    WireGuardBinding, MAX_SECURITY_EVENTS, MAX_SECURITY_FINDINGS, PROTOCOL_VERSION,
+    UnixId, WireGuardBinding, MAX_SECURITY_EVENTS, MAX_SECURITY_FINDINGS, PROTOCOL_VERSION,
 };
 use rand_core::OsRng;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
@@ -2331,6 +2331,7 @@ fn validate_access_statement(statement: &AccessStatement) -> Result<(), AnyError
             roles,
             scopes,
             unix_users,
+            unix_ids,
             ssh_public_keys,
             oidc_audiences,
             not_before,
@@ -2346,6 +2347,41 @@ fn validate_access_statement(statement: &AccessStatement) -> Result<(), AnyError
             }
             for value in unix_users {
                 validate_release_label("unix_user", value)?;
+            }
+            let mut seen_uids = std::collections::BTreeMap::new();
+            let mut seen_gids = std::collections::BTreeMap::new();
+            for (user, id) in unix_ids {
+                if !unix_users.iter().any(|candidate| candidate == user) {
+                    return Err(
+                        format!("unix_ids names `{user}`, which is not in unix_users").into(),
+                    );
+                }
+                if id.uid < 1000
+                    || id.gid < 1000
+                    || id.uid == 65_534
+                    || id.gid == 65_534
+                    || id.uid == u32::MAX
+                    || id.gid == u32::MAX
+                {
+                    return Err(format!(
+                        "unix_ids for `{user}` must be 1000..=4294967294 and must not name nobody"
+                    )
+                    .into());
+                }
+                if let Some(other) = seen_uids.insert(id.uid, user) {
+                    return Err(format!(
+                        "uid {} is assigned to both `{other}` and `{user}`",
+                        id.uid
+                    )
+                    .into());
+                }
+                if let Some(other) = seen_gids.insert(id.gid, user) {
+                    return Err(format!(
+                        "gid {} is assigned to both `{other}` and `{user}`",
+                        id.gid
+                    )
+                    .into());
+                }
             }
             for value in oidc_audiences {
                 validate_access_identity("oidc_audience", value)?;
@@ -3371,6 +3407,7 @@ mod tests {
             roles: vec!["operator".into()],
             scopes: vec!["site:home".into()],
             unix_users: vec!["avery".into()],
+            unix_ids: Default::default(),
             ssh_public_keys: vec![],
             oidc_audiences: vec!["mycelium".into()],
             oidc_ssh_key_exchange: true,
@@ -3382,6 +3419,36 @@ mod tests {
     #[test]
     fn access_validation_accepts_normalized_oidc_principal() {
         validate_access_statement(&oidc_grant("oidc:https://identity.example#subject-42")).unwrap();
+    }
+
+    #[test]
+    fn access_validation_checks_unix_ids() {
+        let mut grant = oidc_grant("avery");
+        if let AccessStatement::Grant { unix_ids, .. } = &mut grant {
+            unix_ids.insert(
+                "avery".into(),
+                UnixId {
+                    uid: 4001,
+                    gid: 4001,
+                },
+            );
+        }
+        validate_access_statement(&grant).unwrap();
+        if let AccessStatement::Grant { unix_ids, .. } = &mut grant {
+            unix_ids.insert(
+                "nobody-else".into(),
+                UnixId {
+                    uid: 4002,
+                    gid: 4002,
+                },
+            );
+        }
+        assert!(validate_access_statement(&grant).is_err());
+        if let AccessStatement::Grant { unix_ids, .. } = &mut grant {
+            unix_ids.remove("nobody-else");
+            unix_ids.insert("avery".into(), UnixId { uid: 0, gid: 0 });
+        }
+        assert!(validate_access_statement(&grant).is_err());
     }
 
     #[test]

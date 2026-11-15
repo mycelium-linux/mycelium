@@ -85,6 +85,7 @@ fn expired_client_renews_through_relay_without_issuer_connection() {
             roles: vec!["home-operator".into()],
             scopes: vec![myceliumd::ssh_renewal::scope(&nodes[2], 300).unwrap()],
             unix_users: vec!["mames".into()],
+            unix_ids: Default::default(),
             ssh_public_keys: vec![subject.public_key().to_openssh().unwrap()],
             oidc_audiences: vec![],
             oidc_ssh_key_exchange: false,

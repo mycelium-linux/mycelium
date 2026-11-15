@@ -12,6 +12,7 @@ mod doctor;
 mod enroll;
 mod frontdoor;
 mod host_access;
+mod host_accounts;
 mod host_supervisor;
 mod invite;
 mod iroh_tun;
