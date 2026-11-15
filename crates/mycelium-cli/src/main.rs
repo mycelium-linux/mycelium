@@ -31,6 +31,7 @@ mod skills;
 mod ssh_access;
 mod stun;
 mod sync;
+mod unix_ids;
 mod wireguard;
 
 use mycelium_core::{
@@ -218,6 +219,8 @@ usage:
   mycelium access host install-timer --policy /etc/mycelium/access.json --daemon-home /home/USER/.mycelium [--updates /etc/mycelium/access-updates.json] --write
   mycelium access host supervise --policy /etc/mycelium/access.json --updates /etc/mycelium/access-updates.json --write
   mycelium access keygen --path PATH --write [--json]
+  mycelium access unix-id allocate USER... [--min N] [--max N] [--path FILE] --write [--json]
+  mycelium access unix-id list [--path FILE] [--json]
   mycelium access publish --statement PATH --signing-key PATH --write [--dry-run] [--json]
   mycelium authority list [--json]
   mycelium authority delegate --statement PATH --signing-key PATH --write [--dry-run] [--json]
@@ -981,6 +984,9 @@ async fn fleet(args: &[String]) -> Result<Vec<String>, ClientError> {
 }
 
 async fn access(args: &[String]) -> Result<Vec<String>, ClientError> {
+    if args.first().is_some_and(|value| value == "unix-id") {
+        return unix_ids::run(&args[1..]).map_err(access_error);
+    }
     if args.first().is_some_and(|value| value == "host") {
         if args.get(1).is_some_and(|v| v == "pam-check") {
             return host_access::pam_check(&args[1..]).map_err(access_error);
