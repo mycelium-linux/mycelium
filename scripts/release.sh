@@ -34,6 +34,8 @@ REMOTE_MAC_HOST=${MYCELIUM_RELEASE_REMOTE_MAC_HOST:-}
 REMOTE_CLEAN=0
 REMOTE_SESSION_PREFIX=${MYCELIUM_RELEASE_SESSION_PREFIX:-mycelium-release}
 FPL_BOB=${MYCELIUM_RELEASE_FPL_BOB:-fpl-bob}
+IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
+IROH_TUN_SRC=${IROH_TUN_SRC:-${XDG_CACHE_HOME:-$HOME/.cache}/mycelium/release-src/iroh-tun}
 
 # These are the binaries the unified installer currently knows how to place.
 # `myceliumd` and `mycelium-dns-resolver` are compatibility artifacts; see
@@ -46,6 +48,13 @@ COMPONENTS=(
     mycelium-dns-resolver
     geoded
 )
+
+# `iroh-tun` is built from its own repository, so it is staged separately rather
+# than through COMPONENTS: that loop reads binaries out of this workspace's
+# target directory, and this one is not in it. It belongs to the artifact all the
+# same, because a node that has to compile its own tunnel is a node that needs a
+# Rust toolchain just to enrol - which is what a release exists to stop.
+RELEASE_COMPONENTS=("${COMPONENTS[@]}" iroh-tun)
 
 ASSETS=()
 BUILT_TARGETS=()
@@ -202,6 +211,40 @@ default_targets() {
     fi
 }
 
+# The tunnel binary, for the same target as everything else in the archive.
+#
+# Built locally even when the crates above are built remotely: one extra crate
+# cross-compiles where a workspace's worth of them does not, and an archive
+# without the binary the `--vpn` component installs is an archive a node cannot
+# use without a toolchain anyway.
+stage_iroh_tun() {
+    local target=$1
+    local stage=$2
+    local src=$IROH_TUN_SRC
+    if [ "$DRY_RUN" = 1 ]; then
+        note "would build iroh-tun for $target from $IROH_TUN_REPO"
+        note "would stage $stage/iroh-tun"
+        return 0
+    fi
+    if [ -d "$src/.git" ]; then
+        git -C "$src" remote set-url origin "$IROH_TUN_REPO"
+        git -C "$src" fetch --depth 1 origin
+        git -C "$src" reset --hard FETCH_HEAD
+    else
+        mkdir -p "$(dirname "$src")"
+        git clone --depth 1 "$IROH_TUN_REPO" "$src"
+    fi
+    local build=(cargo build --release --locked --target "$target")
+    if [[ "$target" == *-unknown-linux-musl ]] && command -v cargo-zigbuild >/dev/null 2>&1; then
+        build=(cargo zigbuild --release --locked --target "$target")
+    fi
+    say "Building iroh-tun for $target"
+    ( cd "$src" && "${build[@]}" )
+    local binary="$src/target/$target/release/iroh-tun"
+    [ -f "$binary" ] || die "iroh-tun built no binary for $target"
+    install -m 755 "$binary" "$stage/iroh-tun"
+}
+
 build_target() {
     local target=$1
     case "$target" in
@@ -271,9 +314,10 @@ build_target() {
         [ -f "$target_dir/$binary" ] || die "missing build output: $target_dir/$binary"
         install -m 755 "$target_dir/$binary" "$stage/$binary"
     done
+    stage_iroh_tun "$target" "$stage"
 
     if [[ "$target" == *-apple-darwin ]] && [ -n "$APPLE_IDENTITY" ]; then
-        for binary in "${COMPONENTS[@]}"; do
+        for binary in "${RELEASE_COMPONENTS[@]}"; do
             codesign --force --options runtime --timestamp \
                 --sign "$APPLE_IDENTITY" "$stage/$binary"
             codesign --verify --strict "$stage/$binary"
@@ -289,12 +333,12 @@ build_target() {
         printf 'commit=%s\n' "$(git rev-parse HEAD)"
         printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'rustc=%s\n' "$(rustc --version 2>/dev/null || echo unknown)"
-        printf 'components=%s\n' "${COMPONENTS[*]}"
+        printf 'components=%s\n' "${RELEASE_COMPONENTS[*]}"
     } >"$stage/BUILD-INFO"
     cp -f LICENSE LICENSE-APACHE "$stage/"
 
     : >"$stage/SHA256SUMS"
-    for binary in "${COMPONENTS[@]}" BUILD-INFO LICENSE LICENSE-APACHE; do
+    for binary in "${RELEASE_COMPONENTS[@]}" BUILD-INFO LICENSE LICENSE-APACHE; do
         printf '%s  %s\n' "$(sha256_file "$stage/$binary")" "$binary" >>"$stage/SHA256SUMS"
     done
 
