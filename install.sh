@@ -30,8 +30,8 @@ SUFFIX=${MYCELIUM_DNS_SUFFIX:-myc}
 SITE=${MYCELIUM_SITE:-}
 ROOT_LIBEXEC=${MYCELIUM_ROOT_LIBEXEC:-/usr/local/libexec/mycelium}
 
-MYCELIUM_REPO=${MYCELIUM_REPO:-https://github.com/mycelium-linux/mycelium.git}
-RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-mycelium-linux/mycelium}
+MYCELIUM_REPO=${MYCELIUM_REPO:-https://github.com/fungOS-linux/mycelium.git}
+RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-fungOS-linux/mycelium}
 RELEASE_VERSION=
 RELEASE_BASE=
 RELEASE_DIR=
@@ -333,11 +333,19 @@ mycelium_source() {
     cache="${XDG_CACHE_HOME:-$HOME/.cache}/mycelium/install-src/mycelium"
     if [ "$DRY_RUN" = 1 ]; then printf '%s' "$cache"; return; fi
     mkdir -p "$(dirname "$cache")"
+    # stdout is this function's return value, so every trace goes to stderr.
+    # `run` prints the command it is about to execute, and a caller that does
+    # `src=$(mycelium_source)` otherwise gets `+ git clone ...` glued to the
+    # path and then fails with "not a Mycelium checkout: + git clone ...".
     if [ -d "$cache/.git" ]; then
-        run git -C "$cache" fetch --depth 1 origin
-        run git -C "$cache" reset --hard FETCH_HEAD
+        # The cache is derived state: keep its origin pointed at the repository
+        # this run was told to use. Otherwise a moved or renamed default keeps
+        # fetching the old one forever, and the source builds stale code.
+        run git -C "$cache" remote set-url origin "$MYCELIUM_REPO" >&2
+        run git -C "$cache" fetch --depth 1 origin >&2
+        run git -C "$cache" reset --hard FETCH_HEAD >&2
     else
-        run git clone --depth 1 "$MYCELIUM_REPO" "$cache"
+        run git clone --depth 1 "$MYCELIUM_REPO" "$cache" >&2
     fi
     printf '%s' "$cache"
 }
