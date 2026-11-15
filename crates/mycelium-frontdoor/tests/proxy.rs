@@ -65,7 +65,7 @@ async fn start_frontdoor_tls(
             Some(route_path),
             None,
             0,
-            Some((cert_path, key_path)),
+            Some(mycelium_ingress::ServerTls::new(cert_path, key_path)),
         )
         .await
         {

@@ -73,7 +73,7 @@ pub async fn run_with_tls(
     config_path: Option<PathBuf>,
     token_file: Option<PathBuf>,
     reload_secs: u64,
-    tls: Option<(PathBuf, PathBuf)>,
+    tls: Option<mycelium_ingress::ServerTls>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_options(
         vec![listen],
@@ -94,7 +94,7 @@ pub async fn run_with_options(
     config_path: Option<PathBuf>,
     token_file: Option<PathBuf>,
     reload_secs: u64,
-    tls: Option<(PathBuf, PathBuf)>,
+    tls: Option<mycelium_ingress::ServerTls>,
     usage_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read every operator input before opening the listener. A frontdoor that
@@ -189,8 +189,8 @@ pub async fn run_with_options(
         let tls = tls.clone();
         tasks.spawn(async move {
             match tls {
-                Some((cert, key)) => {
-                    let config = tls_config(&cert, &key).map_err(|error| error.to_string())?;
+                Some(tls) => {
+                    let config = tls_config(&tls).map_err(|error| error.to_string())?;
                     eprintln!(
                         "mycelium-frontdoor: listening on https://{address}; routing by Host"
                     );
@@ -238,24 +238,21 @@ fn spawn_usage_persist(usage: Arc<UsageStore>) {
     });
 }
 
+/// The whole TLS policy lives in `mycelium-ingress`, so this listener and
+/// `palisade` cannot disagree about who is calling.
 fn tls_config(
-    cert_path: &Path,
-    key_path: &Path,
+    tls: &mycelium_ingress::ServerTls,
 ) -> Result<Arc<rustls::ServerConfig>, Box<dyn std::error::Error + Send + Sync>> {
-    let certificates = rustls_pemfile::certs(&mut BufReader::new(File::open(cert_path)?))
-        .collect::<Result<Vec<_>, _>>()?;
-    if certificates.is_empty() {
-        return Err(format!("{} contains no certificates", cert_path.display()).into());
-    }
-    let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(key_path)?))?
-        .ok_or_else(|| format!("{} contains no private key", key_path.display()))?;
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let mut config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(certificates, key)?;
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
+    mycelium_ingress::server_config(tls).map_err(|error| error.to_string().into())
+}
+
+/// The caller's certificate digest for this connection, if it presented one.
+///
+/// A task-local rather than a request extension because `serve_connection` is
+/// driven inside this task: the identity is bound to the connection, and the
+/// handler that reads it runs in the same task.
+tokio::task_local! {
+    static CLIENT_IDENTITY: Option<String>;
 }
 
 async fn serve_tls(
@@ -285,11 +282,18 @@ async fn serve_tls(
                             return;
                         }
                     };
+                    let identity = tls
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .and_then(|chain| chain.first())
+                        .map(mycelium_ingress::client_identity);
                     let io = TokioIo::new(tls);
-                    if let Err(error) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                        .serve_connection_with_upgrades(io, service)
-                        .await
-                    {
+                    let served = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                    // The identity belongs to this connection, not to a request
+                    // header a client could have sent.
+                    let connection = served.serve_connection_with_upgrades(io, service);
+                    if let Err(error) = CLIENT_IDENTITY.scope(identity, connection).await {
                         eprintln!("mycelium-frontdoor: HTTPS connection from {peer} failed: {error}");
                     }
                 });
@@ -526,6 +530,12 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
         forwarded = forwarded
             .header("x-forwarded-host", &host)
             .header("x-forwarded-proto", state.forwarded_proto);
+        // Who called, when the mesh CA vouched for them. This is attached here,
+        // after `skip_header` has already dropped any inbound copy: a client
+        // that sends the header itself is claiming to be a node.
+        if let Ok(Some(identity)) = CLIENT_IDENTITY.try_with(|identity| identity.clone()) {
+            forwarded = forwarded.header(mycelium_ingress::CLIENT_CERT_HEADER, identity);
+        }
         match target_authorization(&route, &target, caller_credential.as_deref()) {
             Ok(Some(credential)) => {
                 forwarded = forwarded.header("authorization", credential);
@@ -886,6 +896,9 @@ fn skip_header(name: &str) -> bool {
             | "trailers"
             | "transfer-encoding"
             | "upgrade"
+            // A client claiming an identity is exactly the question this header
+            // exists to answer. The forwarder adds its own below, never this.
+            | "x-mycelium-cert-sha256"
     )
 }
 

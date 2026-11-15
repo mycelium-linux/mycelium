@@ -18,7 +18,7 @@ fn run_sync() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.routes,
         config.token_file,
         config.reload_secs,
-        config.tls.map(|tls| (tls.cert, tls.key)),
+        config.tls,
         config.usage,
     ))
 }
@@ -29,18 +29,12 @@ struct Config {
     routes: Option<PathBuf>,
     token_file: Option<PathBuf>,
     reload_secs: u64,
-    tls: Option<TlsFiles>,
+    tls: Option<mycelium_ingress::ServerTls>,
     usage: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TlsFiles {
-    cert: PathBuf,
-    key: PathBuf,
-}
-
 mod args {
-    use super::{Config, TlsFiles};
+    use super::Config;
     use std::net::SocketAddr;
     use std::path::PathBuf;
 
@@ -51,6 +45,7 @@ mod args {
         let mut reload_secs = 1;
         let mut tls_cert = None;
         let mut tls_key = None;
+        let mut client_ca = None;
         let mut usage = None;
         let mut index = 0;
 
@@ -95,6 +90,12 @@ mod args {
                         argv.get(index).ok_or("--tls-key requires a path")?,
                     ));
                 }
+                "--client-ca" => {
+                    index += 1;
+                    client_ca = Some(PathBuf::from(
+                        argv.get(index).ok_or("--client-ca requires a path")?,
+                    ));
+                }
                 "--usage" => {
                     index += 1;
                     usage = Some(PathBuf::from(
@@ -116,7 +117,11 @@ mod args {
             token_file,
             reload_secs,
             tls: match (tls_cert, tls_key) {
-                (Some(cert), Some(key)) => Some(TlsFiles { cert, key }),
+                (Some(cert), Some(key)) => Some(mycelium_ingress::ServerTls {
+                    certificate: cert,
+                    key,
+                    client_ca,
+                }),
                 (None, None) => None,
                 _ => return Err("--tls-cert and --tls-key must be provided together".into()),
             },
@@ -128,7 +133,7 @@ mod args {
         println!(
             "mycelium-frontdoor --listen 127.0.0.1:8080 [--routes frontdoor.json] \
              [--token-file TOKEN] [--reload-secs 1] [--usage usage.json] \
-             [--tls-cert CERT --tls-key KEY]"
+             [--tls-cert CERT --tls-key KEY [--client-ca CA]]"
         );
     }
 }
@@ -154,10 +159,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             config.tls,
-            Some(TlsFiles {
-                cert: PathBuf::from("server.pem"),
-                key: PathBuf::from("server-key.pem")
-            })
+            Some(mycelium_ingress::ServerTls::new(
+                "server.pem",
+                "server-key.pem"
+            ))
         );
         assert!(parse(&["--listen", "127.0.0.1:8443", "--tls-cert", "server.pem"]).is_err());
         assert!(parse(&["--listen", "127.0.0.1:8443", "--tls-key", "server-key.pem"]).is_err());

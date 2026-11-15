@@ -10,6 +10,7 @@ name = "mycelium-frontdoor"
 path = "src/main.rs"
 
 [dependencies]
+mycelium-ingress = { path = "../mycelium-ingress" }
 axum = "0.8"
 fpl-resource-observation.workspace = true
 futures-util = "0.3"
