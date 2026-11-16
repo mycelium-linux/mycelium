@@ -26,13 +26,23 @@ pub fn ssh_role_principal(principal: &str, role: &str) -> String {
 /// The Rust target of the currently running binary. Publication uses this
 /// when the build pipeline does not provide an explicit target.
 pub fn local_build_target() -> String {
+    let arch = std::env::consts::ARCH;
     #[cfg(target_os = "macos")]
-    let os = "apple-darwin";
+    let suffix = "apple-darwin";
     #[cfg(all(target_os = "linux", target_env = "musl"))]
-    let os = "unknown-linux-musl";
+    let suffix = "unknown-linux-musl";
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    let os = "unknown-linux-gnu";
-    format!("{}-{os}", std::env::consts::ARCH)
+    let suffix = "unknown-linux-gnu";
+    // The WASI worlds are their own ABI: `wasm32-wasip1` and `wasm32-wasip2`
+    // differ in what a host has to provide, so the difference is published.
+    #[cfg(all(target_os = "wasi", target_env = "p2"))]
+    let suffix = "wasip2";
+    #[cfg(all(target_os = "wasi", not(target_env = "p2")))]
+    let suffix = "wasip1";
+    // Anything else names its own OS rather than guessing a vendor triple.
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "wasi")))]
+    let suffix = std::env::consts::OS;
+    format!("{arch}-{suffix}")
 }
 
 /// Release targets executable by this host, in preference order. Linux can
