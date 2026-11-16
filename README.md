@@ -23,6 +23,46 @@ Applied plans have canonical identities and durable per-action receipts. See
 > safest place to begin. Every mutation requires an explicit `--write`, and
 > supported operations offer `--dry-run` so the proposed action is visible first.
 
+## Architecture
+
+One daemon per host, one narrow interface between it and everything else. The CLI
+and any automation speak to `myceliumd` over a Unix socket; the daemon owns every
+credential, every driver session, and every decision about what may change.
+
+```mermaid
+flowchart TD
+    operator["Operator"] --> cli["mycelium CLI"]
+    cli -->|"Unix socket RPC"| daemon["myceliumd"]
+
+    subgraph host["One enrolled host"]
+        drivers["Vendor drivers: SNMP, Redfish/iLO, UniFi, EdgeOS, Linux, Darwin"]
+        topology["Observations to topology: inventory, ports, services, routes"]
+        desired["Desired state: proposal, ActionPlan, per-action receipts"]
+        access["Access: OIDC grants, short-lived SSH certificates, KRL"]
+        frontdoor["Frontdoor, ingress and DNS"]
+        broker["geoded: owner-local credential leases"]
+        store["VFS: content-addressed blobs"]
+    end
+
+    daemon --> drivers
+    daemon --> topology
+    daemon --> desired
+    daemon --> access
+    daemon --> frontdoor
+    daemon -.->|"lease, 1s to 1h"| broker
+    daemon -.->|"put and fetch by CID"| store
+
+    drivers -->|"read-only unless --write"| devices["Switches, APs, BMCs, servers"]
+    topology --> devices
+    idp["OIDC identity provider"] --> access
+    daemon <-->|"signed observations, mTLS over QUIC"| peers["Other hosts in the mesh"]
+```
+
+Reads are the default path. A mutation only happens after a proposal lowers into
+the shared `ActionPlan`, and every applied action leaves a receipt. Credentials
+never enter that plan: configuration carries a non-secret reference, and the
+daemon leases the secret at the moment a driver needs it.
+
 ## What works today
 
 | Area | Current support |
