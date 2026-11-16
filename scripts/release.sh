@@ -476,6 +476,23 @@ write_release_metadata() {
         return 0
     fi
     mkdir -p "$dir"
+    # The metadata describes the artifacts, so the commit is read from the
+    # artifacts. Reading HEAD here instead made v0.1.1 publish as "commit
+    # 7406ffc" while every archive inside it was built at a101eda - the dist
+    # directory had outlived the checkout that produced it, and nothing noticed.
+    local artifact_commit="" target_commit
+    for target in "${BUILT_TARGETS[@]}"; do
+        local stamp="$dir/.built-$target"
+        [ -f "$stamp" ] || die "no build stamp for $target; cannot describe what was archived"
+        target_commit=$(cat "$stamp")
+        [ -n "$target_commit" ] || die "empty build stamp for $target"
+        if [ -z "$artifact_commit" ]; then
+            artifact_commit=$target_commit
+        elif [ "$target_commit" != "$artifact_commit" ]; then
+            # Archives from two commits cannot be described by one release.
+            die "release set mixes commits: $target at ${target_commit:0:12}, earlier targets at ${artifact_commit:0:12}; pass --rebuild"
+        fi
+    done
     {
         printf '{\n  "version": "%s",\n  "channel": "%s",\n  "artifacts": [' "$VERSION" "$CHANNEL"
         local first=1
@@ -489,7 +506,7 @@ write_release_metadata() {
     } >"$set"
     {
         printf '{\n  "version": "%s",\n  "channel": "%s",\n  "commit": "%s",\n  "generated_at": "%s",\n  "targets": [\n' \
-            "$VERSION" "$CHANNEL" "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            "$VERSION" "$CHANNEL" "$artifact_commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         local first=1
         for target in "${BUILT_TARGETS[@]}"; do
             [ "$first" = 1 ] || printf ',\n'
