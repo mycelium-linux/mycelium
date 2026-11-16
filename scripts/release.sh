@@ -35,7 +35,11 @@ REMOTE_CLEAN=0
 REMOTE_SESSION_PREFIX=${MYCELIUM_RELEASE_SESSION_PREFIX:-mycelium-release}
 FPL_BOB=${MYCELIUM_RELEASE_FPL_BOB:-fpl-bob}
 IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
-IROH_TUN_SRC=${IROH_TUN_SRC:-${XDG_CACHE_HOME:-$HOME/.cache}/mycelium/release-src/iroh-tun}
+# Deliberately outside `$HOME`: cargo walks up from a manifest until it finds a
+# workspace root, so a stray `Cargo.toml` anywhere above the checkout makes the
+# build refuse with "current package believes it's in a workspace when it's not".
+# One in the home directory is enough to break every iroh-tun build on the box.
+IROH_TUN_SRC=${IROH_TUN_SRC:-${TMPDIR:-/tmp}/mycelium-iroh-tun-src}
 
 # These are the binaries the unified installer currently knows how to place.
 # `myceliumd` and `mycelium-dns-resolver` are compatibility artifacts; see

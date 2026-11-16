@@ -761,7 +761,11 @@ build_iroh_tun() {
     if [ -n "${IROH_TUN_SRC:-}" ]; then
         src=$IROH_TUN_SRC
     else
-        src="${XDG_CACHE_HOME:-$HOME/.cache}/mycelium/install-src/iroh-tun"
+        # Outside `$HOME` on purpose: cargo walks up from a manifest until it
+        # finds a workspace root, so one stray `Cargo.toml` above the checkout -
+        # a home-directory crate, say - makes the build refuse instead of
+        # building.
+        src="${TMPDIR:-/tmp}/mycelium-iroh-tun-src"
         mkdir_p "$(dirname "$src")"
         if [ -d "$src/.git" ]; then
             run git -C "$src" fetch --depth 1 origin
