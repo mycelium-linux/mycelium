@@ -34,6 +34,28 @@ REMOTE_MAC_HOST=${MYCELIUM_RELEASE_REMOTE_MAC_HOST:-}
 REMOTE_CLEAN=0
 REMOTE_SESSION_PREFIX=${MYCELIUM_RELEASE_SESSION_PREFIX:-mycelium-release}
 FPL_BOB=${MYCELIUM_RELEASE_FPL_BOB:-fpl-bob}
+# One target dir per machine, not per checkout. A release build of this
+# workspace is several gigabytes, and one per worktree fills a disk long before
+# it runs out of source - the same rule soil's README states for its hosts.
+# `CARGO_TARGET_DIR` wins when the caller already chose one.
+if [ -z "${CARGO_TARGET_DIR:-}" ]; then
+    if [ "$(uname -s)" = Darwin ]; then
+        CARGO_TARGET_DIR="$HOME/Library/Caches/mycelium/cargo-target"
+    else
+        CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/mycelium/cargo-target"
+    fi
+fi
+export CARGO_TARGET_DIR
+export CARGO_INCREMENTAL=0
+# Build through bob's wrapper when nothing else has claimed it: `bob-rustc`
+# fails open to a plain compile and puts every unit through the shared cache,
+# so a release is cache-warm for every machine that builds it next.
+if [ -z "${RUSTC_WRAPPER:-}" ] && [ -f "$HOME/.config/sccache/env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$HOME/.config/sccache/env"
+    set +a
+fi
 IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
 # Deliberately outside `$HOME`: cargo walks up from a manifest until it finds a
 # workspace root, so a stray `Cargo.toml` anywhere above the checkout makes the
@@ -266,7 +288,7 @@ build_target() {
     case "$target" in
         *[!A-Za-z0-9_.-]*) die "invalid target triple: $target" ;;
     esac
-    local target_dir="$ROOT/target/$target/release"
+    local target_dir="$CARGO_TARGET_DIR/$target/release"
     local stage="$OUT/v$VERSION/$target"
     local build
     local wasi=0
@@ -313,7 +335,7 @@ build_target() {
         local session="${REMOTE_SESSION_PREFIX}-${VERSION}-${target}"
         session=$(printf '%s' "$session" | tr -c 'A-Za-z0-9_.-' '-')
         local bob_args=(remote --host "$remote_host" --session "$session" \
-            --back "target/$target/release")
+            --back "$target_dir")
         [ "$REMOTE_CLEAN" = 1 ] && bob_args+=(--clean)
         say "Building $target on $remote_host through fpl-bob remote"
         if [ "$DRY_RUN" = 1 ]; then
