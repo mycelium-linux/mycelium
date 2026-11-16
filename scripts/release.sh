@@ -360,8 +360,10 @@ build_target() {
         # assembles ARM64 into x86 errors ("too many memory references for
         # adc"). `cargo zigbuild` sets CC/AR for the target itself.
         local remote_cargo=(cargo build --release --locked --target "$target")
+        local remote_cc=host
         if [[ "$target" == *-unknown-linux-musl ]]; then
             remote_cargo=(cargo zigbuild --release --locked --target "$target")
+            remote_cc=zig
         fi
         local remote_build=("${remote_cargo[@]}"
             -p mycelium-cli --features mycelium-cli/iroh-sync
@@ -373,7 +375,12 @@ build_target() {
             remote_build=(env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
                 "${remote_build[@]}")
         fi
-        local session="${REMOTE_SESSION_PREFIX}-${VERSION}-${target}"
+        # The remote session directory is this build's cache key, so it names the C
+        # toolchain as well as the target. A musl build that once ran with the host
+        # cc leaves host objects in its target dir, and cargo will not rerun that
+        # build script later just because `CC_<target>` appeared: cc-rs only asks
+        # cargo to watch the env vars it consulted, and that run consulted none.
+        local session="${REMOTE_SESSION_PREFIX}-${VERSION}-${target}-${remote_cc}"
         session=$(printf '%s' "$session" | tr -c 'A-Za-z0-9_.-' '-')
         local bob_args=(remote --host "$remote_host" --session "$session" \
             --back "$target_dir")
