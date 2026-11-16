@@ -17,6 +17,7 @@ OUT=${MYCELIUM_RELEASE_DIR:-$ROOT/dist/releases}
 PUBLISH=0
 DRY_RUN=0
 ALLOW_DIRTY=0
+REBUILD=0
 ALLOW_VERSION_DRIFT=0
 CLOBBER=0
 DRAFT=0
@@ -146,6 +147,8 @@ Other:
   --from-tag TAG         derive VERSION from TAG; HEAD must be at that tag
   --out DIR              output directory (default dist/releases)
   --allow-dirty          permit a dirty worktree
+  --rebuild              build every target even if an archive for this commit
+                         is already staged (default: reuse it)
   --allow-version-drift  permit Cargo.toml version != --version
   --dry-run              print the plan; do not build or publish
   -h, --help             this text
@@ -174,6 +177,7 @@ while [ $# -gt 0 ]; do
         --from-tag) [ $# -ge 2 ] || die "--from-tag needs a tag"; FROM_TAG=$2; shift 2 ;;
         --out) [ $# -ge 2 ] || die "--out needs a directory"; OUT=$2; shift 2 ;;
         --allow-dirty) ALLOW_DIRTY=1; shift ;;
+        --rebuild) REBUILD=1; shift ;;
         --allow-version-drift) ALLOW_VERSION_DRIFT=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -247,6 +251,31 @@ default_targets() {
         [ -n "$target" ] || die "cannot determine host target; pass --target"
         TARGETS=("$target")
     fi
+    order_by_cost
+}
+
+# Cheapest first. A wasm build is seconds and an ARM Linux cross build is ten
+# minutes, so a matrix that starts with the expensive one spends its budget
+# before it knows the cheap ones work. Ordering by cost also means a run that
+# dies late still leaves the earlier archives staged for reuse.
+order_by_cost() {
+    local ranked=()
+    local target rank
+    for target in "${TARGETS[@]}"; do
+        rank=3
+        case "$target" in
+            wasm32-*) rank=0 ;;
+            *-apple-darwin) rank=1 ;;
+            *-unknown-linux-musl) rank=2 ;;
+        esac
+        ranked+=("$rank $target")
+    done
+    local sorted
+    sorted=$(printf '%s\n' "${ranked[@]}" | sort -n -k1,1 | cut -d' ' -f2-)
+    TARGETS=()
+    while IFS= read -r target; do
+        [ -n "$target" ] && TARGETS+=("$target")
+    done <<< "$sorted"
 }
 
 # The tunnel binary, for the same target as everything else in the archive.
@@ -402,8 +431,23 @@ build_target() {
     done
 
     local asset="$OUT/v$VERSION/mycelium-v$VERSION-$target.tar.gz"
+    local stamp="$OUT/v$VERSION/.built-$target"
+    local commit
+    commit=$(git rev-parse HEAD)
+    # Resumable: an archive from a previous run at the same commit is the same
+    # archive. A release that dies on its last target should not rebuild the
+    # first three - one workspace build is minutes on this machine, and there is
+    # room for about two of them before the work belongs on a builder.
+    if [ "$REBUILD" != 1 ] && [ -f "$asset" ] && [ -f "$stamp" ] \
+        && [ "$(cat "$stamp")" = "$commit" ] && [ -z "$(git status --porcelain)" ]; then
+        say "Reusing $target from a previous run at $commit"
+        ASSETS+=("$asset")
+        BUILT_TARGETS+=("$target")
+        return 0
+    fi
     mkdir -p "$OUT/v$VERSION"
     tar -C "$stage" -czf "$asset" .
+    printf '%s' "$commit" >"$stamp"
     ASSETS+=("$asset")
     BUILT_TARGETS+=("$target")
     note "wrote $asset"
@@ -506,14 +550,22 @@ run_once() {
     check_tag
     check_clean
     default_targets
-    local target
+    local started total
+    started=$(date +%s)
+    total=${#TARGETS[@]}
+    local i=0 target t0
     for target in "${TARGETS[@]}"; do
+        i=$((i + 1))
+        t0=$(date +%s)
+        say "[$i/$total] $target"
         build_target "$target"
+        note "$target took $(( $(date +%s) - t0 ))s"
     done
     write_release_metadata
     publish_release
     publish_mesh
     say "Release $VERSION staged in $OUT/v$VERSION"
+    note "total $(( $(date +%s) - started ))s"
 }
 
 watch_tags() {
