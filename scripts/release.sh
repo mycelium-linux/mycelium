@@ -392,14 +392,19 @@ build_target() {
         local member
         if [ "$wasi" = 1 ]; then
             for member in "${WASI_CRATES[@]}"; do
-                copy+=" \"\$CARGO_TARGET_DIR/$target/release/lib${member//-/_}.rlib\""
+                copy+=" \"target/$target/release/lib${member//-/_}.rlib\""
             done
         else
             for member in "${COMPONENTS[@]}"; do
-                copy+=" \"\$CARGO_TARGET_DIR/$target/release/$member\""
+                copy+=" \"target/$target/release/$member\""
             done
         fi
-        local remote_script="set -e; ${remote_build[*]}; mkdir -p $back; cp$copy $back/"
+        # The target directory is named here rather than inherited: bob maps the
+        # caller's CARGO_TARGET_DIR into the session only for a command it
+        # recognizes, and `sh -c` is not one. `target/` inside the session is
+        # the same cache on the next run, and says plainly where the artifacts
+        # are.
+        local remote_script="set -e; export CARGO_TARGET_DIR=target; ${remote_build[*]}; mkdir -p $back; cp$copy $back/"
         rm -rf "$fetch_dir"
         local bob_args=(remote --host "$remote_host" --session "$session" \
             --back "$back")
