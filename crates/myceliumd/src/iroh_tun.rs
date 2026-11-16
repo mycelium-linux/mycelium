@@ -670,6 +670,12 @@ fn apply_kernel_state(
     if !cfg!(target_os = "linux") {
         return;
     }
+    // An external tunnel is run by a privileged service, and that service owns
+    // the kernel state too: this daemon usually is not root and cannot assign
+    // addresses, and two writers would fight over the same device.
+    if config.external {
+        return;
+    }
     let Some(tun) = config.tun.clone().filter(|tun| !tun.is_empty()) else {
         return;
     };
@@ -1232,5 +1238,14 @@ exit 1
         config.overlay.clear();
         config.routes.clear();
         assert!(kernel_commands(&config).is_empty(), "nothing to install");
+    }
+
+    #[test]
+    fn an_external_tunnel_leaves_the_kernel_to_its_service() {
+        let mut config = overlay_config();
+        config.external = true;
+        let mut applied = None;
+        apply_kernel_state(&config, &mut applied);
+        assert!(applied.is_none(), "external tunnels are configured by their service");
     }
 }
