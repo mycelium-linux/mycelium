@@ -148,6 +148,7 @@ async fn config(args: &[String]) -> Result<Vec<String>, String> {
     let mut config = read_config()?;
     let mut write = false;
     let mut overlay: Option<Vec<String>> = None;
+    let mut routes: Option<Vec<String>> = None;
     let mut index = 0;
     while index < args.len() {
         let argument = args[index].as_str();
@@ -186,12 +187,20 @@ async fn config(args: &[String]) -> Result<Vec<String>, String> {
                     .get_or_insert_with(Vec::new)
                     .push(value_of(args, &mut index, argument)?);
             }
+            "--route" => {
+                routes
+                    .get_or_insert_with(Vec::new)
+                    .push(value_of(args, &mut index, argument)?);
+            }
             other => return Err(format!("unknown iroh-tun config argument `{other}`")),
         }
         index += 1;
     }
     if let Some(overlay) = overlay {
         config.overlay = overlay;
+    }
+    if let Some(routes) = routes {
+        config.routes = routes;
     }
     let config = config.validate()?;
     let path = Paths::under(&myceliumd::home_dir()).config;

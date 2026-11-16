@@ -74,6 +74,12 @@ pub struct Config {
     /// how the first node in a fleet bootstraps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overlay: Vec<String>,
+    /// CIDRs routed into the tun, typically the fleet overlay prefix. The
+    /// kernel only hands a packet to the tunnel when a route points at the
+    /// device, so without this the overlay addresses are reachable in
+    /// principle and unroutable in practice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<String>,
     #[serde(default = "default_refresh_secs")]
     pub refresh_secs: u64,
     /// Published as an address hint so a peer can dial without a lookup. Only a
@@ -105,6 +111,7 @@ impl Default for Config {
             tun: None,
             mtu: default_mtu(),
             overlay: Vec::new(),
+            routes: Vec::new(),
             refresh_secs: default_refresh_secs(),
             listen: None,
             external: false,
@@ -241,6 +248,8 @@ struct State {
     last_exit: Option<String>,
     last_error: Option<String>,
     reported: Option<String>,
+    /// Last (tun, overlay, routes) applied to the kernel.
+    applied_kernel: Option<(String, Vec<String>, Vec<String>)>,
 }
 
 impl Default for Supervisor {
@@ -417,6 +426,9 @@ impl Supervisor {
                 state.status_age = Some(now.saturating_sub(status.observed_at));
                 state.routes = status.routes.clone();
                 state.refresh_failures = status.refresh_failures;
+                // The child is up and reporting: it created the device, so now
+                // the kernel can be told what the tunnel answers for.
+                apply_kernel_state(&config, &mut state.applied_kernel);
                 if !config.external
                     && now.saturating_sub(status.observed_at) > wedged_after
                     && state.child.is_some()
@@ -615,6 +627,70 @@ fn hex(bytes: &[u8]) -> String {
 
 /// A configured path wins; otherwise the sibling of this daemon, because a fleet
 /// installs the pair together; otherwise PATH.
+/// The `ip` invocations that give the tunnel its identity in the kernel: the
+/// overlay addresses this node answers for, and the prefixes routed into the
+/// device. Pure, so the mapping is testable without a live kernel.
+fn kernel_commands(config: &Config) -> Vec<Vec<String>> {
+    let Some(tun) = config.tun.as_deref().filter(|tun| !tun.is_empty()) else {
+        return Vec::new();
+    };
+    let mut commands = Vec::new();
+    for address in &config.overlay {
+        commands.push(vec![
+            "-6".into(),
+            "addr".into(),
+            "replace".into(),
+            address.clone(),
+            "dev".into(),
+            tun.to_owned(),
+        ]);
+    }
+    for route in &config.routes {
+        commands.push(vec![
+            "-6".into(),
+            "route".into(),
+            "replace".into(),
+            route.clone(),
+            "dev".into(),
+            tun.to_owned(),
+        ]);
+    }
+    commands
+}
+
+/// Apply the kernel state once per distinct (tun, overlay, routes) set.
+///
+/// The daemon owns the config, so it owns the consequence: a wrapper script
+/// that repeats this is a second source of truth that drifts the moment the
+/// config changes, and an operator typing `ip` by hand is a third.
+fn apply_kernel_state(
+    config: &Config,
+    applied: &mut Option<(String, Vec<String>, Vec<String>)>,
+) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let Some(tun) = config.tun.clone().filter(|tun| !tun.is_empty()) else {
+        return;
+    };
+    let key = (tun, config.overlay.clone(), config.routes.clone());
+    if applied.as_ref() == Some(&key) {
+        return;
+    }
+    for command in kernel_commands(config) {
+        match std::process::Command::new("ip").args(&command).output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "myceliumd: ip {}: {}",
+                command.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => eprintln!("myceliumd: ip {}: {error}", command.join(" ")),
+        }
+    }
+    *applied = Some(key);
+}
+
 fn resolve_binary(configured: Option<&PathBuf>, name: &str) -> PathBuf {
     if let Some(path) = configured {
         return expand_home(path);
@@ -1109,5 +1185,52 @@ exit 1
             .unwrap()
             .unwrap();
         assert!(!projected.value.attributes.contains_key("addresses"));
+    }
+
+    fn overlay_config() -> Config {
+        Config {
+            tun: Some("mycelium0".into()),
+            overlay: vec!["fd7a:115c:a1f0:0:f60:f1f4:4c3b:ebac/128".into()],
+            routes: vec!["fd7a:115c:a1f0::/48".into()],
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn kernel_state_is_the_configured_addresses_and_routes() {
+        let commands = kernel_commands(&overlay_config());
+        assert_eq!(commands.len(), 2, "one address and one route");
+        assert_eq!(
+            commands[0],
+            vec![
+                "-6",
+                "addr",
+                "replace",
+                "fd7a:115c:a1f0:0:f60:f1f4:4c3b:ebac/128",
+                "dev",
+                "mycelium0"
+            ]
+        );
+        assert_eq!(
+            commands[1],
+            vec!["-6", "route", "replace", "fd7a:115c:a1f0::/48", "dev", "mycelium0"]
+        );
+    }
+
+    #[test]
+    fn nothing_is_installed_without_a_device_name() {
+        let mut config = overlay_config();
+        config.tun = None;
+        assert!(kernel_commands(&config).is_empty(), "no tun, no kernel state");
+        config.tun = Some(String::new());
+        assert!(kernel_commands(&config).is_empty(), "an empty name is no name");
+    }
+
+    #[test]
+    fn a_client_only_node_installs_no_routes() {
+        let mut config = overlay_config();
+        config.overlay.clear();
+        config.routes.clear();
+        assert!(kernel_commands(&config).is_empty(), "nothing to install");
     }
 }
