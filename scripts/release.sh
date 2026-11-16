@@ -306,7 +306,11 @@ stage_iroh_tun() {
         build=(cargo zigbuild --release --locked --target "$target")
     fi
     say "Building iroh-tun for $target"
-    ( cd "$src" && "${build[@]}" )
+    # Its own target dir, deliberately. iroh-tun is a separate workspace, and
+    # the release exports `CARGO_TARGET_DIR` for the mycelium build - pointing
+    # an unrelated workspace at it puts the binary somewhere this script does
+    # not look, and mixes two projects' artifacts in one cache.
+    ( cd "$src" && CARGO_TARGET_DIR="$src/target" "${build[@]}" )
     local binary="$src/target/$target/release/iroh-tun"
     [ -f "$binary" ] || die "iroh-tun built no binary for $target"
     install -m 755 "$binary" "$stage/iroh-tun"
