@@ -323,6 +323,20 @@ build_target() {
     esac
     local target_dir="$CARGO_TARGET_DIR/$target/release"
     local stage="$OUT/v$VERSION/$target"
+    local asset="$OUT/v$VERSION/mycelium-v$VERSION-$target.tar.gz"
+    local stamp="$OUT/v$VERSION/.built-$target"
+    local commit
+    commit=$(git rev-parse HEAD)
+    # Resumable: an archive from a previous run at the same commit is the same
+    # archive. Decided here, before the build, because staging reads build output
+    # - a check placed after it has already paid for the thing it meant to skip.
+    if [ "$REBUILD" != 1 ] && [ "$DRY_RUN" != 1 ] && [ -f "$asset" ] && [ -f "$stamp" ] \
+        && [ "$(cat "$stamp")" = "$commit" ] && [ -z "$(git status --porcelain)" ]; then
+        say "Reusing $target from a previous run at $commit"
+        ASSETS+=("$asset")
+        BUILT_TARGETS+=("$target")
+        return 0
+    fi
     local build
     local wasi=0
     [[ "$target" == wasm32-* ]] && wasi=1
@@ -382,32 +396,12 @@ build_target() {
         # cargo to watch the env vars it consulted, and that run consulted none.
         local session="${REMOTE_SESSION_PREFIX}-${VERSION}-${target}-${remote_cc}"
         session=$(printf '%s' "$session" | tr -c 'A-Za-z0-9_.-' '-')
-        # What crosses the wire is what the archive needs. Backing the whole
-        # `target/<triple>/release` moves gigabytes of dependencies and build
-        # directories over ssh - twenty-five minutes of an eighty-minute run,
-        # and the reason a release looked hung after every successful build.
-        local back="bob-out/$target"
-        local fetch_dir="$ROOT/$back"
-        local copy=""
-        local member
-        if [ "$wasi" = 1 ]; then
-            for member in "${WASI_CRATES[@]}"; do
-                copy+=" \"target/$target/release/lib${member//-/_}.rlib\""
-            done
-        else
-            for member in "${COMPONENTS[@]}"; do
-                copy+=" \"target/$target/release/$member\""
-            done
-        fi
-        # The target directory is named here rather than inherited: bob maps the
-        # caller's CARGO_TARGET_DIR into the session only for a command it
-        # recognizes, and `sh -c` is not one. `target/` inside the session is
-        # the same cache on the next run, and says plainly where the artifacts
-        # are.
-        local remote_script="set -e; export CARGO_TARGET_DIR=target; ${remote_build[*]}; mkdir -p $back; cp$copy $back/"
-        rm -rf "$fetch_dir"
+        # The absolute back path is the one bob maps into its session and
+        # fetches reliably. A relative path never completed in testing, and a
+        # smaller payload (copy the components into a subdirectory first) needs
+        # that fixed in bob before it can replace this.
         local bob_args=(remote --host "$remote_host" --session "$session" \
-            --back "$back")
+            --back "$target_dir")
         [ "$REMOTE_CLEAN" = 1 ] && bob_args+=(--clean)
         say "Building $target on $remote_host through fpl-bob remote"
         if [ "$DRY_RUN" = 1 ]; then
@@ -415,10 +409,7 @@ build_target() {
             note "would stage $stage"
             return 0
         fi
-        "$FPL_BOB" "${bob_args[@]}" -- sh -c "$remote_script"
-        # Everything downstream stages from the local tree, exactly as it does
-        # for a build that ran on this machine.
-        target_dir="$fetch_dir"
+        "$FPL_BOB" "${bob_args[@]}" -- "${remote_build[@]}"
     else
         say "Building $target"
         if [ "$DRY_RUN" = 1 ]; then
@@ -476,21 +467,6 @@ build_target() {
         printf '%s  %s\n' "$(sha256_file "$stage/$binary")" "$binary" >>"$stage/SHA256SUMS"
     done
 
-    local asset="$OUT/v$VERSION/mycelium-v$VERSION-$target.tar.gz"
-    local stamp="$OUT/v$VERSION/.built-$target"
-    local commit
-    commit=$(git rev-parse HEAD)
-    # Resumable: an archive from a previous run at the same commit is the same
-    # archive. A release that dies on its last target should not rebuild the
-    # first three - one workspace build is minutes on this machine, and there is
-    # room for about two of them before the work belongs on a builder.
-    if [ "$REBUILD" != 1 ] && [ -f "$asset" ] && [ -f "$stamp" ] \
-        && [ "$(cat "$stamp")" = "$commit" ] && [ -z "$(git status --porcelain)" ]; then
-        say "Reusing $target from a previous run at $commit"
-        ASSETS+=("$asset")
-        BUILT_TARGETS+=("$target")
-        return 0
-    fi
     mkdir -p "$OUT/v$VERSION"
     tar -C "$stage" -czf "$asset" .
     printf '%s' "$commit" >"$stamp"
