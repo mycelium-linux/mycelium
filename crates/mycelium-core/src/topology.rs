@@ -534,6 +534,74 @@ impl Topology {
 
     /// Merge a separately signed observer snapshot into a read model. Local
     /// state is not mutated by peer snapshots, preventing gossip feedback.
+    /// Split this topology into parts that each fit one gossip message.
+    ///
+    /// A snapshot is O(fleet): a few hundred nodes already serialize past a
+    /// megabyte, and a peer refuses any observation larger than one message, so
+    /// publishing the whole graph in one event is silently undeliverable. Each
+    /// part is a partial topology and `merge_snapshot` unions them back on the
+    /// receiving side, so every entry lands in exactly one part.
+    pub fn chunked(&self, budget: usize) -> Vec<Self> {
+        let budget = budget.max(4096);
+        let size = |value: &serde_json::Value| value.to_string().len();
+        let mut parts: Vec<Self> = Vec::new();
+        let mut current = Self::empty();
+        let mut used = 64usize;
+        let flush = |current: &mut Self, used: &mut usize, parts: &mut Vec<Self>| {
+            if !current.nodes.is_empty()
+                || !current.segments.is_empty()
+                || !current.advertisements.is_empty()
+                || !current.resource_attachments.is_empty()
+                || !current.leases.is_empty()
+                || !current.conflicts.is_empty()
+            {
+                parts.push(std::mem::replace(current, Self::empty()));
+                *used = 64;
+            }
+        };
+
+        macro_rules! push_map {
+            ($field:ident) => {
+                for (key, value) in &self.$field {
+                    let n = size(&serde_json::to_value((key, value)).expect("serializable")) + 1;
+                    if used + n > budget {
+                        flush(&mut current, &mut used, &mut parts);
+                    }
+                    current.$field.insert(key.clone(), value.clone());
+                    used += n;
+                }
+            };
+        }
+        push_map!(nodes);
+        push_map!(segments);
+        push_map!(advertisements);
+        push_map!(resource_attachments);
+
+        macro_rules! push_vec {
+            ($field:ident) => {
+                for value in &self.$field {
+                    let n = size(&serde_json::to_value(value).expect("serializable")) + 1;
+                    if used + n > budget {
+                        flush(&mut current, &mut used, &mut parts);
+                    }
+                    current.$field.push(value.clone());
+                    used += n;
+                }
+            };
+        }
+        push_vec!(leases);
+        push_vec!(conflicts);
+
+        // Provenance is small and already deduped: it rides on the last part,
+        // and merging drops the duplicates on the receiving side.
+        current.updated_from = self.updated_from.clone();
+        flush(&mut current, &mut used, &mut parts);
+        if parts.is_empty() {
+            parts.push(Self::empty());
+        }
+        parts
+    }
+
     pub fn merge_snapshot(&mut self, other: Self) {
         for (id, node) in other.nodes {
             match self.nodes.entry(id) {
@@ -1163,7 +1231,15 @@ impl Topology {
                 }
             }
         }
-        self.updated_from.push(obs_origin);
+        // Provenance is one entry per (site, device, source), not per
+        // observation: the same few origins arrive thousands of times an hour.
+        // Pushing each one grew this list past 87k entries, which made every
+        // published topology snapshot ~9.4 MB and got it rejected as oversized
+        // by every peer. TopologyFeed::observe dedups too, but only after this
+        // list has already grown.
+        if !self.updated_from.contains(&obs_origin) {
+            self.updated_from.push(obs_origin);
+        }
     }
 
     fn device_node(
@@ -1857,5 +1933,49 @@ mod tests {
         assert!(node.ips.contains_key(&ip("10.0.0.3")));
         assert!(node.ips.contains_key(&ip("10.0.0.33")));
         assert!(node.services.contains_key("tcp:8883/bambu-mqtt-tls"));
+    }
+
+    #[test]
+    fn provenance_lists_each_origin_once() {
+        let mut topology = Topology::empty();
+        let observation = || Observation::DeviceIdentity {
+            device: "peer-key-42".into(),
+            hostname: "radioman-pi".into(),
+            port: "eth0".into(),
+            mac: MacAddress::parse("02:00:00:00:00:42"),
+            ips: vec![ip("192.168.10.42")],
+            origin: Origin::new("radioman-pi", "peer-identity").at_site("home"),
+        };
+        topology.observe_all([observation(), observation(), observation()]);
+        assert_eq!(
+            topology.updated_from.len(),
+            1,
+            "one origin seen three times is one provenance entry, not three"
+        );
+    }
+
+    #[test]
+    fn a_large_topology_splits_into_parts_that_merge_back() {
+        let mut topology = Topology::empty();
+        for index in 0..400 {
+            let origin = Origin::new(format!("dev-{index}"), "test");
+            let node = topology.device_node(&format!("node-{index:04}"), None, &origin);
+            node.hostnames.insert(format!("host-{index}"));
+        }
+        let parts = topology.chunked(8 * 1024);
+        assert!(parts.len() > 1, "400 nodes must not fit one 8 KiB part");
+        for part in &parts {
+            let bytes = serde_json::to_vec(part).expect("serialize").len();
+            assert!(bytes <= 8 * 1024 + 1024, "part is {bytes} bytes");
+        }
+        let mut merged = Topology::empty();
+        for part in parts {
+            merged.merge_snapshot(part);
+        }
+        assert_eq!(
+            merged.nodes.len(),
+            topology.nodes.len(),
+            "chunking must not lose or duplicate nodes"
+        );
     }
 }

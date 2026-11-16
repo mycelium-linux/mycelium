@@ -681,18 +681,29 @@ impl Mesh {
         topology: &mycelium_core::Topology,
     ) -> Result<(), AnyError> {
         let value = serde_json::to_value(topology)?;
-        let digest = mycelium_peer_protocol::sha256_hex(serde_json::to_vec(&value)?.as_slice());
+        let digest =
+            mycelium_peer_protocol::sha256_hex(serde_json::to_vec(&value)?.as_slice());
         // Republishing an unchanged snapshot replaces the stored value, bumps
         // the sequence, and makes every peer re-merge a megabyte for nothing.
         if self.last_topology_digest.lock().await.as_deref() == Some(digest.as_str()) {
             return Ok(());
         }
-        self.publish(PeerEvent::Topology(TopologySnapshot {
-            schema_version: 1,
-            digest: digest.clone(),
-            topology: value,
-        }))
-        .await?;
+        // A snapshot is O(fleet) and already exceeds one gossip message at a few
+        // hundred nodes. Send it as partial topologies; the receiver unions them
+        // with merge_snapshot, so the split is invisible above this layer. Each
+        // part carries its own digest: a peer merges a part once and skips it on
+        // the next republish.
+        for part in topology.chunked(MAX_OBSERVATION_MESSAGE_BYTES * 3 / 4) {
+            let value = serde_json::to_value(&part)?;
+            let digest =
+                mycelium_peer_protocol::sha256_hex(serde_json::to_vec(&value)?.as_slice());
+            self.publish(PeerEvent::Topology(TopologySnapshot {
+                schema_version: 1,
+                digest,
+                topology: value,
+            }))
+            .await?;
+        }
         *self.last_topology_digest.lock().await = Some(digest);
         Ok(())
     }
