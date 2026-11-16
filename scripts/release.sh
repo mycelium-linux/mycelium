@@ -355,7 +355,15 @@ build_target() {
         # The remote host must already have the target installed and, for the
         # GNU ARM target, the matching cross linker. agora-one currently has
         # aarch64-unknown-linux-gnu and aarch64-linux-gnu-gcc.
-        local remote_build=(cargo build --release --locked --target "$target"
+        # A musl target needs zig as the C compiler, on the remote exactly as
+        # here: aws-lc-sys assembles per-architecture sources, and the host gcc
+        # assembles ARM64 into x86 errors ("too many memory references for
+        # adc"). `cargo zigbuild` sets CC/AR for the target itself.
+        local remote_cargo=(cargo build --release --locked --target "$target")
+        if [[ "$target" == *-unknown-linux-musl ]]; then
+            remote_cargo=(cargo zigbuild --release --locked --target "$target")
+        fi
+        local remote_build=("${remote_cargo[@]}"
             -p mycelium-cli --features mycelium-cli/iroh-sync
             -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
         if [ "$target" = aarch64-unknown-linux-gnu ]; then
