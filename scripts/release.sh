@@ -56,6 +56,18 @@ COMPONENTS=(
 # Rust toolchain just to enrol - which is what a release exists to stop.
 RELEASE_COMPONENTS=("${COMPONENTS[@]}" iroh-tun)
 
+# Crates that compile for `wasm32-wasip2`: policy and protocol with no OS
+# dependencies, which is what a spore can link. There is deliberately no daemon
+# here - it opens TUN devices and shells out to launchctl/systemctl, so it
+# cannot exist in a WASI world, and an archive that implied otherwise would fail
+# at the first import.
+WASI_CRATES=(
+    mycelium-core
+    mycelium-dns-policy
+    mycelium-iroh-discovery
+    mycelium-peer-protocol
+)
+
 ASSETS=()
 BUILT_TARGETS=()
 
@@ -253,9 +265,18 @@ build_target() {
     local target_dir="$ROOT/target/$target/release"
     local stage="$OUT/v$VERSION/$target"
     local build
-    build=(cargo build --release --locked --target "$target"
-        -p mycelium-cli --features mycelium-cli/iroh-sync
-        -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
+    local wasi=0
+    [[ "$target" == wasm32-* ]] && wasi=1
+    if [ "$wasi" = 1 ]; then
+        local packages=()
+        local crate
+        for crate in "${WASI_CRATES[@]}"; do packages+=(-p "$crate"); done
+        build=(cargo build --release --locked --target "$target" "${packages[@]}")
+    else
+        build=(cargo build --release --locked --target "$target"
+            -p mycelium-cli --features mycelium-cli/iroh-sync
+            -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
+    fi
     if [[ "$target" == *-unknown-linux-musl ]] && command -v cargo-zigbuild >/dev/null 2>&1; then
         build=(cargo zigbuild --release --locked --target "$target"
             -p mycelium-cli --features mycelium-cli/iroh-sync
@@ -310,11 +331,23 @@ build_target() {
     rm -rf "$stage"
     mkdir -p "$stage"
     local binary
-    for binary in "${COMPONENTS[@]}"; do
-        [ -f "$target_dir/$binary" ] || die "missing build output: $target_dir/$binary"
-        install -m 755 "$target_dir/$binary" "$stage/$binary"
-    done
-    stage_iroh_tun "$target" "$stage"
+    local staged=()
+    if [ "$wasi" = 1 ]; then
+        for binary in "${WASI_CRATES[@]}"; do
+            local artifact="$target_dir/lib${binary//-/_}.rlib"
+            [ -f "$artifact" ] || die "missing wasm output: $artifact"
+            install -m 644 "$artifact" "$stage/lib${binary//-/_}.rlib"
+            staged+=("lib${binary//-/_}.rlib")
+        done
+    else
+        for binary in "${COMPONENTS[@]}"; do
+            [ -f "$target_dir/$binary" ] || die "missing build output: $target_dir/$binary"
+            install -m 755 "$target_dir/$binary" "$stage/$binary"
+            staged+=("$binary")
+        done
+        stage_iroh_tun "$target" "$stage"
+        staged+=(iroh-tun)
+    fi
 
     if [[ "$target" == *-apple-darwin ]] && [ -n "$APPLE_IDENTITY" ]; then
         for binary in "${RELEASE_COMPONENTS[@]}"; do
@@ -333,12 +366,12 @@ build_target() {
         printf 'commit=%s\n' "$(git rev-parse HEAD)"
         printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'rustc=%s\n' "$(rustc --version 2>/dev/null || echo unknown)"
-        printf 'components=%s\n' "${RELEASE_COMPONENTS[*]}"
+        printf 'components=%s\n' "${staged[*]}"
     } >"$stage/BUILD-INFO"
     cp -f LICENSE LICENSE-APACHE "$stage/"
 
     : >"$stage/SHA256SUMS"
-    for binary in "${RELEASE_COMPONENTS[@]}" BUILD-INFO LICENSE LICENSE-APACHE; do
+    for binary in "${staged[@]}" BUILD-INFO LICENSE LICENSE-APACHE; do
         printf '%s  %s\n' "$(sha256_file "$stage/$binary")" "$binary" >>"$stage/SHA256SUMS"
     done
 
