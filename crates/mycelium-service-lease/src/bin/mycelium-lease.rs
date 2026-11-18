@@ -31,7 +31,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let Some(command) = args.first() else {
         return Err(USAGE.trim_end().to_owned());
     };
-    let options = Options::parse(&args[1..])?;
+    let options = Options::parse(&args[1..], command)?;
     let publisher = match &options.path {
         Some(path) => Publisher::at(path, options.node_id.clone()),
         None => Publisher::new(options.home(), options.node_id.clone()),
@@ -81,9 +81,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
             for one in seen {
                 if let Some((key, value)) = &options.tag {
                     let held = one.attributes.get(key);
+                    // A capability is held inside one space-separated attribute,
+                    // so `--tag soil:metrics` has to ask the lease rather than
+                    // look for an attribute named after it.
                     let keep = match value {
                         Some(value) => held == Some(value),
-                        None => held.is_some(),
+                        None => held.is_some() || one.holds(key),
                     };
                     if !keep {
                         continue;
@@ -118,10 +121,14 @@ struct Options {
     path: Option<std::path::PathBuf>,
     once: bool,
     tag: Option<(String, Option<String>)>,
+    capabilities: Vec<String>,
+    metrics: Option<String>,
+    healthz: Option<String>,
+    readyz: Option<String>,
 }
 
 impl Options {
-    fn parse(args: &[String]) -> Result<Self, String> {
+    fn parse(args: &[String], command: &str) -> Result<Self, String> {
         let mut options = Self {
             node_id: String::new(),
             kind: None,
@@ -133,6 +140,10 @@ impl Options {
             path: None,
             once: false,
             tag: None,
+            capabilities: Vec::new(),
+            metrics: None,
+            healthz: None,
+            readyz: None,
         };
         let mut index = 0;
         while index < args.len() {
@@ -190,13 +201,34 @@ impl Options {
                     });
                     index += 2;
                 }
+                "--capability" => {
+                    options.capabilities.push(value(index)?);
+                    index += 2;
+                }
+                "--metrics" => {
+                    options.metrics = Some(value(index)?);
+                    index += 2;
+                }
+                "--healthz" => {
+                    options.healthz = Some(value(index)?);
+                    index += 2;
+                }
+                "--readyz" => {
+                    options.readyz = Some(value(index)?);
+                    index += 2;
+                }
                 other => return Err(format!("unknown option {other:?}\n{USAGE}")),
             }
         }
         if options.node_id.is_empty() {
-            return Err("--node-id is the identity myceliumd already knows this node by; \
-                 it is the only thing a lease cannot guess"
-                .into());
+            if command == "list" {
+                // Listing is an observation, not an assertion: it needs no
+                // identity of its own to read what the catalog already says.
+            } else {
+                return Err("--node-id is the identity myceliumd already knows this node by; \
+                     it is the only thing a lease cannot guess"
+                    .into());
+            }
         }
         Ok(options)
     }
@@ -218,6 +250,18 @@ impl Options {
         let mut lease = Lease::new(kind.clone()).ttl(self.ttl);
         for endpoint in &self.endpoints {
             lease = lease.endpoint(endpoint.clone());
+        }
+        for capability in &self.capabilities {
+            lease = lease.capability(capability.clone());
+        }
+        if let Some(dialect) = &self.metrics {
+            lease = lease.metrics(dialect.clone());
+        }
+        if let Some(path) = &self.healthz {
+            lease = lease.healthz(path.clone());
+        }
+        if let Some(path) = &self.readyz {
+            lease = lease.readyz(path.clone());
         }
         for (key, value) in &self.attributes {
             lease = lease.attribute(key.clone(), value.clone());
