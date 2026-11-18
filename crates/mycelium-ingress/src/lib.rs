@@ -77,6 +77,14 @@ impl std::fmt::Display for IngressError {
 
 impl std::error::Error for IngressError {}
 
+/// The one crypto provider this crate builds TLS objects with. A process that
+/// links both rustls providers has no process-level default, so letting rustls
+/// infer one panics; naming it keeps the listener and the client verifier on the
+/// same provider even when a binary in the same graph enables the other one.
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+}
+
 /// Build the listener's TLS policy.
 pub fn server_config(tls: &ServerTls) -> Result<Arc<ServerConfig>, IngressError> {
     let certificates = load_certificates(&tls.certificate)?;
@@ -84,7 +92,7 @@ pub fn server_config(tls: &ServerTls) -> Result<Arc<ServerConfig>, IngressError>
     // The provider is named rather than inferred: a process that happens to have
     // two crypto providers compiled in makes `ServerConfig::builder()` panic,
     // and a panic inside a spawned listener is a server that never serves.
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let provider = provider();
     let base = ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| IngressError::Config(format!("TLS versions: {error}")))?;
@@ -122,7 +130,7 @@ fn client_verifier(
     // certificate is today's anonymous caller, and one with a certificate the
     // mesh CA signed is a node. Requiring one would take every browser off the
     // public listener.
-    WebPkiClientVerifier::builder(Arc::new(roots))
+    WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider())
         .allow_unauthenticated()
         .build()
         .map_err(|error| IngressError::Config(format!("client verifier: {error}")))
