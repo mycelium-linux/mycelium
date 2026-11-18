@@ -1,0 +1,24 @@
+{
+  "id": "cloudflared-tunnel",
+  "title": "Cloudflare tunnel ingress",
+  "version": "1.0.0",
+  "channel": "stable",
+  "summary": "Public ingress for this node through a Cloudflare named tunnel, forwarded to the loopback ingress.",
+  "platforms": ["aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"],
+  "requires": {
+    "root": true,
+    "network": true,
+    "credentials": ["cloudflare.tunnel-token"],
+    "commands": ["cloudflared"]
+  },
+  "provides": ["ingress.public", "dns.public-hostname"],
+  "steps": {
+    "check": "check.sh",
+    "install": "install.sh",
+    "verify": "verify.sh",
+    "uninstall": "uninstall.sh"
+  },
+  "docs": { "runbook": "runbook.md" },
+  "signer": "",
+  "signature": ""
+}

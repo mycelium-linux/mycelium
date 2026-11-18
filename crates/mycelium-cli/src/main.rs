@@ -15,6 +15,7 @@ mod host_access;
 mod host_supervisor;
 mod invite;
 mod iroh_tun;
+mod managed;
 mod node;
 mod oidc;
 mod oidc_gateway;
@@ -131,6 +132,9 @@ usage:
   mycelium ca restore --bundle FILE --out PATH --share FILE --share FILE --share FILE [--force] --write
   mycelium ca verify --bundle FILE --phrase-file FILE
   mycelium ca split --phrase-file FILE [--out DIR] [--threshold N] [--share-count N] --write
+  mycelium managed list|show ID|plan ID [--catalog DIR] [--json]
+  mycelium managed apply ID [--catalog DIR] [--allow-root] --write
+  mycelium managed uninstall ID [--catalog DIR] [--allow-root] --write
   mycelium pulse list [--json]
   mycelium pulse add --schedule CRON --command CMD [--id ID] [--disabled] --write
   mycelium pulse remove ID --write
@@ -331,6 +335,7 @@ struct Flags {
     statement: Option<String>,
     signing_key: Option<String>,
     trusted_keys: Vec<String>,
+    allow_root: bool,
     version: Option<String>,
     channel: Option<String>,
     address: Option<String>,
@@ -375,6 +380,7 @@ fn parse_flags(args: &[String]) -> Flags {
         statement: None,
         signing_key: None,
         trusted_keys: Vec::new(),
+        allow_root: false,
         version: None,
         channel: None,
         address: None,
@@ -426,6 +432,7 @@ fn parse_flags(args: &[String]) -> Flags {
                     f.targets.push(target.clone());
                 }
             }
+            "--allow-root" => f.allow_root = true,
             "--trusted-key" => {
                 i += 1;
                 if let Some(key) = args.get(i) {
@@ -506,6 +513,12 @@ fn parse_flags(args: &[String]) -> Flags {
                 i += 1;
                 f.bundle = args.get(i).cloned();
             }
+            "--catalog" => {
+                i += 1;
+                if let Some(dir) = args.get(i) {
+                    f.path = Some(dir.clone());
+                }
+            }
             "--manifest" => {
                 i += 1;
                 f.manifest = args.get(i).cloned();
@@ -559,6 +572,7 @@ fn parse_flags(args: &[String]) -> Flags {
 
 async fn run(cmd: &str, args: &[String]) -> Result<Vec<String>, ClientError> {
     match cmd {
+        "managed" => managed_command(args),
         "setup" => setup::run(args).await.map_err(access_error),
         "frontdoor" => frontdoor::run(args).await.map_err(access_error),
         "gateway" => {
@@ -1456,6 +1470,144 @@ fn release_verify(flags: &Flags) -> Result<Vec<String>, ClientError> {
         ));
     }
     Ok(lines)
+}
+
+fn managed_command(args: &[String]) -> Result<Vec<String>, ClientError> {
+    let flags = parse_flags(args);
+    let action = flags.rest.first().map(String::as_str).unwrap_or("list");
+    let catalogue = flags
+        .path
+        .as_deref()
+        .map(expand_home)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| myceliumd::home_dir().join("managed"));
+    if !catalogue.is_dir() && action == "list" {
+        return Ok(vec![format!(
+            "no managed catalogue at {}; the store serves one, or pass --catalog DIR",
+            catalogue.display()
+        )]);
+    }
+    let (entries, problems) =
+        managed::load_catalogue(&catalogue).map_err(|error| err_usage(&error))?;
+    let mut trusted: Vec<String> = flags.trusted_keys.clone();
+    if let Ok(keys) = std::env::var("MYCELIUM_RELEASE_KEYS") {
+        trusted.extend(
+            keys.split([',', ' '])
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    if action == "list" {
+        if flags.json {
+            let rows: Vec<_> = entries
+                .iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "id": entry.manifest.id,
+                        "title": entry.manifest.title,
+                        "version": entry.manifest.version,
+                        "channel": entry.manifest.channel,
+                        "requires_root": entry.manifest.requires.root,
+                        "trusted": entry.manifest.trusted_by(&trusted),
+                        "signed": !entry.manifest.signature.is_empty(),
+                    })
+                })
+                .collect();
+            return Ok(vec![
+                serde_json::to_string(&rows).map_err(|error| err_usage(&error.to_string()))?
+            ]);
+        }
+        let mut lines = vec![format!("managed installs in {}", catalogue.display())];
+        if entries.is_empty() {
+            lines.push("  none; the store serves the catalogue, or pass --catalog DIR".into());
+        }
+        for entry in &entries {
+            let trust = if entry.manifest.signature.is_empty() {
+                "unsigned"
+            } else if entry.manifest.trusted_by(&trusted) {
+                "trusted"
+            } else {
+                "untrusted signer"
+            };
+            lines.push(format!(
+                "  {:<28} {:<8} {} ({trust})",
+                entry.manifest.id, entry.manifest.version, entry.manifest.title
+            ));
+        }
+        for problem in problems {
+            lines.push(format!("  skipped: {problem}"));
+        }
+        return Ok(lines);
+    }
+    let Some(id) = flags.rest.get(1) else {
+        return Err(err_usage(
+            "managed needs an id: list|show|plan|apply|uninstall ID",
+        ));
+    };
+    let entry = entries
+        .iter()
+        .find(|entry| &entry.manifest.id == id)
+        .ok_or_else(|| {
+            err_usage(&format!(
+                "no managed install `{id}` in {}",
+                catalogue.display()
+            ))
+        })?;
+    match action {
+        "show" | "plan" => {
+            let mut lines = managed::plan(entry);
+            if flags.json {
+                return Ok(vec![serde_json::to_string(&serde_json::json!({
+                    "manifest": entry.manifest,
+                    "directory": entry.dir,
+                    "trusted": entry.manifest.trusted_by(&trusted),
+                }))
+                .map_err(|error| err_usage(&error.to_string()))?]);
+            }
+            if !entry.manifest.trusted_by(&trusted) {
+                lines.push("  signature: not from a trusted key; apply will refuse".into());
+            }
+            Ok(lines)
+        }
+        "apply" | "uninstall" => {
+            // Trust and consent are separate decisions: a trusted manifest still
+            // has to be asked for by name, with --write, and with --allow-root
+            // when its steps need privilege.
+            if entry.manifest.signature.is_empty() {
+                return Err(err_usage(&format!(
+                    "{} is unsigned; a managed install runs host code and must be signed",
+                    entry.manifest.id
+                )));
+            }
+            if !entry.manifest.trusted_by(&trusted) {
+                return Err(err_usage(&format!(
+                    "{} is signed by {} which this host does not trust",
+                    entry.manifest.id, entry.manifest.signer
+                )));
+            }
+            if !flags.write {
+                return Err(err_usage(&format!(
+                    "managed {action} changes the host; pass --write (plan first with `mycelium managed plan {id}`)"
+                )));
+            }
+            let step = if action == "apply" {
+                managed::Action::Install
+            } else {
+                managed::Action::Uninstall
+            };
+            let mut lines = managed::run_step(entry, step, flags.allow_root, true)
+                .map_err(|error| err_usage(&error))?;
+            if action == "apply" {
+                lines.extend(
+                    managed::run_step(entry, managed::Action::Verify, flags.allow_root, true)
+                        .map_err(|error| err_usage(&error))?,
+                );
+            }
+            Ok(lines)
+        }
+        other => Err(err_usage(&format!("unknown managed action `{other}`"))),
+    }
 }
 
 async fn packages(args: &[String]) -> Result<Vec<String>, ClientError> {
