@@ -13,6 +13,7 @@
 pub mod allocation;
 pub mod boot;
 pub mod capabilities;
+pub mod channel;
 pub mod classification;
 pub mod credentials;
 pub mod device;

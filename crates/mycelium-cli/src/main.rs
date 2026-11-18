@@ -255,7 +255,7 @@ usage:
   mycelium dns zone [--zone lan|flat|all] [--suffix DOMAIN] [--site SITE] [--reachable CIDR...] [--json]
   mycelium dns service-address --prefix CIDR [--json]
   mycelium dns plan --site SITE [--suffix DOMAIN] [--delegations FILE] [--reachable CIDR...] [--json|--dnsmasq]
-  mycelium dns resolver init --config FILE --site SITE --suffix DOMAIN --reachable CIDR... --write [--service-address CIDR] [--doh URL [--doh-listen ADDR]]
+  mycelium dns resolver init --config FILE --site SITE --suffix DOMAIN --reachable CIDR... --write [--service-address CIDR] [--listen ADDR]... [--doh URL [--doh-listen ADDR]]
   mycelium dns resolver plan|status --config FILE
   mycelium dns resolver apply|run|system-install|system-remove --config FILE --write [--dry-run]
   mycelium dns blocklist plan --source FILE... [--allow DOMAIN]... [--action sinkhole|nxdomain] [--json|--dnsmasq]

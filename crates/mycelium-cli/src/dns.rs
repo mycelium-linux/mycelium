@@ -241,7 +241,7 @@ pub(crate) async fn resolver_init(args: &[String]) -> Result<Vec<String>, String
     while let Some(flag) = rest.next() {
         match flag.as_str() {
             "--site" | "--suffix" | "--reachable" | "--config" | "--doh" | "--doh-listen"
-            | "--dnsmasq" | "--mycelium" => {
+            | "--dnsmasq" | "--mycelium" | "--listen" => {
                 let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
                 forward.push(flag.clone());
                 forward.push(value.clone());

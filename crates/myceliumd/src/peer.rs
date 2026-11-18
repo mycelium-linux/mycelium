@@ -670,9 +670,7 @@ impl Mesh {
             .values()
             .filter(|envelope| envelope.origin != self.hello.node_id)
             .filter_map(|envelope| match &envelope.event {
-                PeerEvent::Topology(snapshot) => {
-                    Some((envelope.origin.clone(), snapshot.clone()))
-                }
+                PeerEvent::Topology(snapshot) => Some((envelope.origin.clone(), snapshot.clone())),
                 _ => None,
             })
             .collect()
@@ -2550,6 +2548,13 @@ fn persist_observations(values: &[SignedEnvelope]) -> Result<(), AnyError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = crate::peer_observations_path();
+    // The home directory is created by the daemon on a normal start, but a
+    // process that publishes before that (a test, a repair, a first boot with
+    // an empty MYCELIUM_HOME) would otherwise fail with ENOENT and drop the
+    // observation it just accepted.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     // The rename is atomic, the write is not: a second writer must never land in
     // this one's temporary file, or the published document holds both.
     let temp = path.with_extension(format!(
@@ -3282,8 +3287,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let hello =
-            SignedEnvelope::sign(&key, 2, 2, PeerEvent::Hello(test_hello(&key))).unwrap();
+        let hello = SignedEnvelope::sign(&key, 2, 2, PeerEvent::Hello(test_hello(&key))).unwrap();
 
         assert!(observation_too_large(&oversized).is_some());
         assert!(observation_too_large(&hello).is_none());
@@ -3299,7 +3303,11 @@ mod tests {
             &BTreeSet::new(),
             &BTreeSet::new(),
         );
-        assert_eq!(accepted.len(), 1, "only the deliverable observation is kept");
+        assert_eq!(
+            accepted.len(),
+            1,
+            "only the deliverable observation is kept"
+        );
         assert!(accepted.contains_key(&event_key(&hello)));
     }
 
