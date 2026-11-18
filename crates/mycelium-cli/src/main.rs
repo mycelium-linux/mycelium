@@ -2861,6 +2861,17 @@ fn automatic_upgrade_allowed(
     Ok(None)
 }
 
+/// Write the updater LaunchAgent, creating `~/Library/LaunchAgents` when it is
+/// missing. A fresh macOS account often has no such directory, and `fs::write`
+/// then fails with ENOENT - which is how `update policy enable` used to fail on
+/// a machine that had just been enrolled.
+fn write_update_agent(path: &std::path::Path, plist: &str) -> Result<(), ClientError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(ClientError::Io)?;
+    }
+    std::fs::write(path, plist).map_err(ClientError::Io)
+}
+
 fn install_update_scheduler() -> Result<(), ClientError> {
     let executable = std::env::current_exe().map_err(ClientError::Io)?;
     if cfg!(target_os = "macos") {
@@ -2875,7 +2886,7 @@ fn install_update_scheduler() -> Result<(), ClientError> {
             xml_update(&log.to_string_lossy()),
             xml_update(&log.to_string_lossy())
         );
-        std::fs::write(&path, plist).map_err(ClientError::Io)?;
+        write_update_agent(&path, &plist)?;
         let domain = format!("gui/{}", uid()?);
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &format!("{domain}/dev.fpl.mycelium-updater")])
@@ -5694,6 +5705,17 @@ mod ssh_command_tests {
             std::path::Path::new("/var/lib/mycelium")
         )
         .is_err());
+    }
+
+    #[test]
+    fn updater_agent_creates_its_directory_on_a_fresh_account() {
+        let root =
+            std::env::temp_dir().join(format!("mycelium-updater-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("Library/LaunchAgents/dev.fpl.mycelium-updater.plist");
+        write_update_agent(&path, "<plist/>").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "<plist/>");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

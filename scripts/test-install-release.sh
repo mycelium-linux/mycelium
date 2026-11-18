@@ -32,7 +32,7 @@ fixture() {
     cat >"$dir/release-metadata.json" <<EOF
 {
   "version": "$version",
-  "channel": "test",
+  "channel": "stable",
   "commit": "0",
   "generated_at": "1970-01-01T00:00:00Z",
   "targets": [
@@ -51,6 +51,11 @@ fetch_release
 [ -x "$RELEASE_DIR/mycelium" ] || fail "release binary was not unpacked"
 grep -q 'mycelium-test' "$RELEASE_DIR/mycelium" || fail "unpacked the wrong binary"
 ok "downloads, verifies, and unpacks a release"
+# The update policy has to track the channel the release was published on, or a
+# member who installed a `stable` release never sees another one.
+[ "$RELEASE_CHANNEL" = stable ] \
+    || fail "release channel was not read from metadata (got '${RELEASE_CHANNEL}')"
+ok "reads the release channel from metadata"
 rm -rf "$RELEASE_DIR"
 RELEASE_DIR=
 

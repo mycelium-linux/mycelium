@@ -19,6 +19,10 @@
 
 set -Eeuo pipefail
 
+# The script's own path, when it has one: `curl | bash` runs with an empty
+# BASH_SOURCE and a working directory that is not a source tree. Where this
+# script came from decides whether the install can build in place.
+SCRIPT_PATH=${BASH_SOURCE[0]:-}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)
 TS=$(date +%Y%m%dT%H%M%S)
 PREFIX=${MYCELIUM_PREFIX:-$HOME/.local}
@@ -35,6 +39,7 @@ RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-fungOS-linux/mycelium}
 RELEASE_VERSION=
 RELEASE_BASE=
 RELEASE_DIR=
+RELEASE_CHANNEL=
 IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
 VFS_REPO=${VFS_REPO:-https://github.com/mycelium-linux/fungos-vfs.git}
 SOIL_REPO=${SOIL_REPO:-https://github.com/mycelium-linux/soil.git}
@@ -44,7 +49,14 @@ DRY_RUN=0
 YES=0
 FORCE=0
 START=1
-ENABLE_UPDATES=0
+# Components that build from their own repositories. A release archive does not
+# carry them, so a release install defaults them off; see apply_release_defaults.
+LOCAL_COMPONENT_DEFAULT=yes
+RELEASE_ONLY=no
+# Automatic updates are on by default for a release install and off for a
+# source build; `ask` is resolved once the install path is known. See
+# apply_update_policy.
+ENABLE_UPDATES=ask
 ENROLL=ask
 VPN=ask
 VFS=ask
@@ -103,19 +115,24 @@ Core:
   --trust-cert           trust the generated frontdoor CA (prompted by default)
   --no-enroll            install/update only; do not enroll
   --no-start             write service definitions but do not start them
-  --enable-updates       keep automatic updates enabled (default: disable for a local build)
+  --enable-updates       enable automatic updates (default: enabled for --release,
+                         disabled for a source or --bin-dir build)
+  --no-enable-updates    leave automatic updates disabled
   --source DIR           build Mycelium from this checkout
   --bin-dir DIR          install prebuilt binaries from DIR instead of building
   --release TAG          download published release binaries (TAG, or latest)
+                         (default when this script is not running in a checkout)
   --release-base URL     override the release download base (mirror or local test dir)
   --prefix DIR           install user binaries under DIR/bin (default ~/.local)
   --force                rebuild iroh-tun instead of reusing the installed binary
 
 Components:
   --vpn / --no-vpn       iroh-tun IPv6 overlay (default yes, needs sudo)
-  --vfs / --no-vfs       fungos-vfs content service and FUSE mount (default yes)
-  --soil / --no-soil     Soil CLI/runtime and fungOS.app (default yes)
-  --bob / --no-bob       fpl-bob build offload (default yes)
+  --vfs / --no-vfs       fungos-vfs content service and FUSE mount (default yes;
+                         no in a release install, where it would need a compiler)
+  --soil / --no-soil     Soil CLI/runtime and fungOS.app (default yes; no in a
+                         release install, where it would need a compiler)
+  --bob / --no-bob       fpl-bob build offload (default yes; no in a release install)
   --operator / --no-operator
                          frontdoor, skills, completions, update policy (default yes)
   --geode / --no-geode   optional geode credential broker (default no)
@@ -326,7 +343,7 @@ ensure_rust() {
 
 mycelium_source() {
     if [ -n "$SRC" ]; then printf '%s' "$SRC"; return; fi
-    if [ -f "$SCRIPT_DIR/Cargo.toml" ] && [ -d "$SCRIPT_DIR/crates/mycelium-cli" ]; then
+    if in_checkout; then
         printf '%s' "$SCRIPT_DIR"
         return
     fi
@@ -356,6 +373,13 @@ sha256_file() {
     else
         shasum -a 256 "$1" | awk '{print $1}'
     fi
+}
+
+# A checkout can build; a piped installer has no source tree, and the release
+# archive is the only path that does not need a compiler there.
+in_checkout() {
+    [ -n "$SCRIPT_PATH" ] || return 1
+    [ -f "$SCRIPT_DIR/Cargo.toml" ] && [ -d "$SCRIPT_DIR/crates/mycelium-cli" ]
 }
 
 # Release targets to try, most portable first. Releases may carry musl or gnu
@@ -389,10 +413,19 @@ fetch_release() {
     meta=$tmp/release-metadata.json
     curl -fsSL "$base/release-metadata.json" -o "$meta" \
         || die "no release metadata at $base"
-    version=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$meta" | head -1)
+    # The metadata is JSON, and a published release is free to re-indent it:
+    # v0.1.3 is one field per line while scripts/release.sh writes one target
+    # object per line. Parse the flattened text and match whole target objects,
+    # so both layouts and a reformat in between keep working.
+    flat=$(tr '\n' ' ' <"$meta" | tr -s ' ')
+    version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' <<<"$flat" | head -1)
+    # The channel the release was published on. The update policy has to track
+    # it: a policy left on the default `canary` never sees a `stable` release,
+    # so a member who installed one never updates.
+    RELEASE_CHANNEL=$(sed -n 's/.*"channel": *"\([^"]*\)".*/\1/p' <<<"$flat" | head -1)
     line=
     for target in $targets; do
-        line=$(grep -F "\"target\": \"$target\"" "$meta" | head -1)
+        line=$(grep -o '{[^{}]*}' <<<"$flat" | grep -F "\"target\": \"$target\"" | head -1)
         [ -z "$line" ] || break
     done
     archive=$(printf '%s' "$line" | sed -n 's/.*"archive": "\([^"]*\)".*/\1/p')
@@ -690,7 +723,7 @@ install_operator() {
             note "unrecognized shell; add completion manually"
         fi
     fi
-    if [ "$ENABLE_UPDATES" != 1 ]; then
+    if [ "$ENABLE_UPDATES" != yes ]; then
         note "automatic updates are disabled; re-enable when a signed release is newer"
     fi
 }
@@ -1608,6 +1641,34 @@ want() { # VAR VALUE
     eval "$1=\$2"
 }
 
+# The default for the components that only exist as source builds, plus the
+# reset of a profile's answer for them. Run after apply_profile: a profile's
+# `yes` is a wish, and a release install cannot honour it without a compiler.
+apply_release_defaults() {
+    # A release archive carries Mycelium's binaries and iroh-tun. fungos-vfs,
+    # Soil and bob are built from their own repositories, so a release install
+    # defaults them off instead of reaching for a compiler. An explicit
+    # --vfs/--soil/--bob still builds them, which is the caller's choice.
+    LOCAL_COMPONENT_DEFAULT=yes
+    RELEASE_ONLY=no
+    [ -n "$RELEASE_VERSION" ] || return 0
+    RELEASE_ONLY=yes
+    LOCAL_COMPONENT_DEFAULT=no
+    for name in VFS SOIL BOB; do
+        case " $DECLARED " in
+            *" $name "*) ;;
+            *)
+                eval "current=\${$name}"
+                if [ "$current" = yes ]; then
+                    flag=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
+                    note "release install: $flag builds from source, so it is off; pass --$flag to build it"
+                fi
+                eval "$name=ask"
+                ;;
+        esac
+    done
+}
+
 # A profile picks the components this machine should have. Explicit flags always
 # win; the profile only fills what the command line did not decide.
 apply_profile() {
@@ -1663,7 +1724,8 @@ parse_args() {
             --dry-run) DRY_RUN=1; shift ;;
             --force) FORCE=1; shift ;;
             --no-start) START=0; shift ;;
-            --enable-updates) ENABLE_UPDATES=1; shift ;;
+            --enable-updates) ENABLE_UPDATES=yes; shift ;;
+            --no-enable-updates) ENABLE_UPDATES=no; shift ;;
             --no-enroll) ENROLL=no; shift ;;
             --enroll) ENROLL=yes; shift ;;
             --vpn) VPN=yes; declared VPN; shift ;;
@@ -1742,6 +1804,48 @@ preflight() {
     export PATH="$LOCAL_BIN:$BIN_DIR:$HOME/.cargo/bin:$PATH"
 }
 
+# Automatic updates keep a member's host on the signed release track, so the
+# install path decides the default: a release install turns them on for the
+# channel that release was published on, while a source or --bin-dir build
+# leaves them off (a local build has no release to update to, and the signed
+# channel may be older than the binary it replaced). --enable-updates and
+# --no-enable-updates override the default either way.
+resolve_updates_default() {
+    [ "$ENABLE_UPDATES" = ask ] || return 0
+    if [ -n "$RELEASE_VERSION" ]; then
+        ENABLE_UPDATES=yes
+    else
+        ENABLE_UPDATES=no
+    fi
+}
+
+apply_update_policy() {
+    MYC="$LOCAL_BIN/mycelium"
+    [ -x "$MYC" ] || return 0
+    if [ "$DRY_RUN" = 1 ]; then
+        if [ "$ENABLE_UPDATES" = yes ]; then
+            note "would enable automatic updates on channel ${RELEASE_CHANNEL:-from the release metadata}"
+        else
+            note "would leave automatic updates disabled"
+        fi
+        return 0
+    fi
+    if [ "$ENABLE_UPDATES" = yes ]; then
+        set -- update policy enable
+        if [ -n "$RELEASE_CHANNEL" ]; then set -- "$@" --channel "$RELEASE_CHANNEL"; fi
+        set -- "$@" --write
+        if run "$MYC" "$@"; then
+            note "automatic updates enabled${RELEASE_CHANNEL:+ on channel $RELEASE_CHANNEL}"
+        else
+            warn "could not enable automatic updates; run: mycelium update policy enable --write"
+        fi
+        return 0
+    fi
+    if run "$MYC" update policy disable --write; then
+        note "automatic updates left disabled (re-enable with --enable-updates)"
+    fi
+}
+
 pause_updater() {
     if [ "$DRY_RUN" = 1 ]; then return 0; fi
     if [ "$(uname -s)" = Darwin ]; then
@@ -1759,7 +1863,7 @@ pause_updater() {
 }
 
 resume_updater() {
-    [ "$ENABLE_UPDATES" = 1 ] || return 0
+    [ "$ENABLE_UPDATES" = yes ] || return 0
     [ "$UPDATER_PAUSED" = 1 ] || return 0
     if [ "$(uname -s)" = Darwin ]; then
         plist="$HOME/Library/LaunchAgents/dev.fpl.mycelium-updater.plist"
@@ -1774,7 +1878,18 @@ resume_updater() {
 
 main() {
     parse_args "$@"
+    # A piped installer has no checkout to build from, and a member should not
+    # have to install Rust to join. So the published release is the default when
+    # this script is not running out of a source tree; a checkout keeps the
+    # source build, and --release/--source/--bin-dir always win.
+    if [ -z "$RELEASE_VERSION" ] && [ -z "$SRC" ] && [ -z "$BIN_SRC" ] \
+        && ! in_checkout; then
+        RELEASE_VERSION=latest
+        note "no checkout here; installing the latest published release"
+    fi
+    resolve_updates_default
     apply_profile
+    apply_release_defaults
     if [ -n "$RELEASE_VERSION" ]; then
         [ -z "$BIN_SRC" ] || die "--release and --bin-dir are mutually exclusive"
         [ -z "$SRC" ] || die "--release and --source are mutually exclusive"
@@ -1805,9 +1920,16 @@ main() {
         fi
         need_root "install the root-owned iroh-tun service"
     fi
-    choose VFS yes "Install the content VFS (fungos-vfs + FUSE/LaunchAgent)?"
-    choose SOIL yes "Install Soil and fungOS.app?"
-    choose BOB yes "Install build offload (fpl-bob + sccache)?"
+    if [ "$RELEASE_ONLY" = yes ]; then
+        for name in VFS SOIL BOB; do
+            eval "value=\${$name}"
+            [ "$value" = yes ] \
+                && note "$name builds from source; this needs a Rust toolchain"
+        done
+    fi
+    choose VFS "$LOCAL_COMPONENT_DEFAULT" "Install the content VFS (fungos-vfs + FUSE/LaunchAgent)?"
+    choose SOIL "$LOCAL_COMPONENT_DEFAULT" "Install Soil and fungOS.app?"
+    choose BOB "$LOCAL_COMPONENT_DEFAULT" "Install build offload (fpl-bob + sccache)?"
     choose OPERATOR yes "Configure the operator surface (skills, completions, update policy)?"
     choose FRONTDOOR yes "Install the loopback frontdoor and its ingress services?"
     choose GEODE no "Install the optional geode credential broker?"
@@ -1815,14 +1937,10 @@ main() {
         if ask_yes "Enroll or repair this node's fleet membership?" yes; then ENROLL=yes; else ENROLL=no; fi
     fi
     pause_updater
-    if [ "$ENABLE_UPDATES" = 1 ]; then trap resume_updater EXIT; fi
+    if [ "$ENABLE_UPDATES" = yes ]; then trap resume_updater EXIT; fi
     install_mycelium
-    if [ "$DRY_RUN" = 0 ] && [ "$ENABLE_UPDATES" != 1 ] && [ -x "$LOCAL_BIN/mycelium" ]; then
-        if "$LOCAL_BIN/mycelium" update policy disable --write >/dev/null 2>&1; then
-            note "automatic updates disabled for this local build (re-enable with --enable-updates)"
-        fi
-    fi
     setup_node
+    apply_update_policy
     if [ "$VPN" = yes ]; then run_component vpn install_vpn; fi
     run_component dns install_dns
     if [ "$FRONTDOOR" = yes ]; then run_component frontdoor install_frontdoor; fi
