@@ -234,6 +234,46 @@ not write files, start services, or ask for sudo.
   `~/Documents/src/bob` checkout avoids a clone. Scheduler URL/token are optional
   and prompt only when the component is selected.
 
+## Removing an install
+
+`uninstall.sh` stops and removes what the installer and the CLI put on the
+machine, in ownership order: each component is asked to remove itself through
+its own CLI while that CLI still exists, then the script sweeps what is left.
+A component that is already broken or missing falls through to the sweep, so an
+uninstaller never needs the thing it is uninstalling.
+
+```sh
+./uninstall.sh --dry-run    # print the plan, change nothing
+./uninstall.sh              # services, binaries, shell integration; state kept
+./uninstall.sh --purge      # also remove state and application data
+```
+
+State is kept unless `--purge` is passed: the tunnel key, the enrolled identity,
+the CA and the DNS policy are not reproducible from a release. `--purge`
+archives `~/.mycelium` to `~/mycelium-uninstall-<timestamp>.tar.gz` with mode
+`0700` before removing anything (that archive holds the node key, so it is
+written private), and `--no-backup` skips the archive.
+
+What it removes:
+
+| | |
+|---|---|
+| User services | LaunchAgents or `systemd --user` units for the daemon, frontdoor, ingress, updater, DNS, geode, VFS and Soil |
+| Root services | `iroh-tun` and the DNS daemon (LaunchDaemons or system units), `/etc/resolver/myc`, the root copy of the binary and its runtime directory |
+| Trust | the frontdoor CA in the login keychain (macOS) |
+| Shell | the `mycelium installer` block in `.zshrc`/`.bashrc` (the original file is backed up) |
+| Skills | the bundled Mycelium skill directories, and nothing else under `skills/` |
+| Binaries | the installed binaries and their `.pre-<timestamp>` backups |
+
+Root steps need sudo. Without it, the run continues, removes everything
+user-owned, and names what it left behind; `--dry-run` needs no sudo at all.
+A `--home` other than the default is treated as a sandbox or a second channel:
+system-wide DNS and tunnel wiring is left alone, because that wiring belongs to
+the install that claimed the machine.
+
+The script refuses to delete a directory it cannot recognise, including `$HOME`
+itself, so a mistyped `--home` cannot become an `rm -rf`.
+
 ## Rollback
 
 Every replaced binary is backed up beside itself as `<name>.pre-<timestamp>`,
