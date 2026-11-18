@@ -39,3 +39,5 @@ jobs:
         run: scripts/test-install-release.sh
       - name: Test install path defaults
         run: scripts/test-install-defaults.sh
+      - name: Test uninstall
+        run: scripts/test-uninstall.sh
