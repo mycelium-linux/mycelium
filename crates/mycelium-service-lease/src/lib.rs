@@ -27,6 +27,81 @@ pub const MAX_TTL_SECS: u64 = 300;
 /// leaves the pool inside a few minutes.
 pub const DEFAULT_TTL_SECS: u64 = 240;
 
+/// The attribute a lease lists what it can be asked for in. Space-separated
+/// capabilities, so `soil:metrics` and `soil:unibus` can be held at once and a
+/// reader can filter on one without a second schema.
+pub const CAPABILITIES: &str = "capabilities";
+
+/// One fresh lease, as a reader sees it: the service's name is composed from
+/// the kind and the node that owns it, which is what turns a lease into a name
+/// an operator or a scraper can dial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Observed {
+    pub service_id: ServiceId,
+    pub kind: String,
+    /// `<kind>.<node_name>` when the lease names its node, else `<kind>.<observer>`.
+    pub name: String,
+    pub endpoints: BTreeSet<String>,
+    pub attributes: BTreeMap<String, String>,
+}
+
+impl Observed {
+    /// Whether this lease holds `capability`.
+    pub fn holds(&self, capability: &str) -> bool {
+        self.attributes
+            .get(CAPABILITIES)
+            .is_some_and(|held| held.split_whitespace().any(|one| one == capability))
+    }
+
+    /// The health path this service answers, if it published one.
+    pub fn healthz(&self) -> Option<&str> {
+        self.attributes.get("healthz").map(String::as_str)
+    }
+
+    pub fn readyz(&self) -> Option<&str> {
+        self.attributes.get("readyz").map(String::as_str)
+    }
+}
+
+/// Everything fresh in a catalog, sorted by name. Filtering is the caller's:
+/// a lease that does not declare what it holds is still observed, just not
+/// scrapeable by capability.
+pub fn observe(path: &Path) -> Result<Vec<Observed>, Error> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Vec::new());
+    }
+    let catalog: ServiceCatalog = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
+    let now = unix_now();
+    let mut observed = catalog
+        .observations
+        .into_iter()
+        .filter(|one| one.is_fresh_at(now))
+        .map(|one| {
+            let node = one
+                .value
+                .attributes
+                .get("node_name")
+                .cloned()
+                .unwrap_or_else(|| one.provenance.observer.clone());
+            Observed {
+                service_id: one.service_id.clone(),
+                name: format!("{}.{node}", one.value.kind),
+                kind: one.value.kind,
+                endpoints: one.value.endpoints,
+                attributes: one.value.attributes,
+            }
+        })
+        .collect::<Vec<_>>();
+    observed.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(observed)
+}
+
 /// One service this process is currently offering.
 #[derive(Debug, Clone)]
 pub struct Lease {
@@ -62,6 +137,47 @@ impl Lease {
     pub fn ttl(mut self, secs: u64) -> Self {
         self.ttl_secs = secs;
         self
+    }
+
+    /// What this service can be asked for. A holder of `soil:metrics` answers
+    /// Prometheus on its endpoint, so the lease says so and an observer can find
+    /// every scrapeable name without asking each service.
+    pub fn capability(mut self, capability: impl Into<String>) -> Self {
+        let mut held = self
+            .attributes
+            .remove(CAPABILITIES)
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        held.insert(capability.into());
+        self.attributes
+            .insert(CAPABILITIES.into(), held.into_iter().collect::<Vec<_>>().join(" "));
+        self
+    }
+
+    /// The scrape dialect, when the service publishes one (`prometheus`
+    /// today). Set it with the metric endpoint's own capability, not by hand.
+    pub fn metrics(mut self, dialect: impl Into<String>) -> Self {
+        self.attributes.insert("metrics".into(), dialect.into());
+        self
+    }
+
+    /// Where liveness is answered. A probe that has to guess a path is a probe
+    /// that reports a 404 as an outage.
+    pub fn healthz(mut self, path: impl Into<String>) -> Self {
+        self.attributes.insert("healthz".into(), path.into());
+        self
+    }
+
+    /// Where readiness is answered, when it differs from liveness.
+    pub fn readyz(mut self, path: impl Into<String>) -> Self {
+        self.attributes.insert("readyz".into(), path.into());
+        self
+    }
+
+    pub fn attributes(&self) -> &BTreeMap<String, String> {
+        &self.attributes
     }
 
     pub fn kind(&self) -> &str {
@@ -122,6 +238,10 @@ impl Lease {
             confidence: Confidence::Strong,
             value: Service {
                 kind: self.kind.clone(),
+                // A label the owner asks for, not a name: the zone turns a
+                // label into `unibus.pris.fpl.myc`, and a lease that spelled a
+                // full name would be claiming the zone's job.
+                names: Vec::new(),
                 endpoints: self.endpoints.clone(),
                 protocols: BTreeSet::new(),
                 formats: BTreeSet::new(),
@@ -403,5 +523,60 @@ mod tests {
         assert!(renewal_interval(Some(240), 240).is_err());
         assert!(renewal_interval(Some(0), 240).is_err());
         assert_eq!(renewal_interval(None, 240).unwrap(), 80);
+    }
+
+    #[test]
+    fn a_lease_says_what_it_can_be_asked_for() {
+        let lease = lease()
+            .capability("soil:unibus")
+            .capability("soil:metrics")
+            .metrics("prometheus")
+            .healthz("/healthz");
+        assert_eq!(
+            lease.attributes().get(CAPABILITIES).map(String::as_str),
+            Some("soil:metrics soil:unibus")
+        );
+        assert_eq!(lease.attributes().get("metrics").map(String::as_str), Some("prometheus"));
+        assert_eq!(lease.attributes().get("healthz").map(String::as_str), Some("/healthz"));
+    }
+
+    #[test]
+    fn an_observer_finds_scrapeable_names_and_their_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("application-services.json");
+        Publisher::at(&path, "node-a")
+            .publish(
+                &lease()
+                    .capability("soil:metrics")
+                    .metrics("prometheus")
+                    .healthz("/healthz")
+                    .attribute("node_name", "pris.fpl.myc"),
+            )
+            .unwrap();
+        Publisher::at(&path, "node-b")
+            .publish(
+                &Lease::new("geode")
+                    .endpoint("https://100.0.0.9:8443")
+                    .attribute("node_name", "batty.fpl.myc"),
+            )
+            .unwrap();
+
+        let seen = observe(&path).unwrap();
+        let names = seen.iter().map(|one| one.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names, ["geode.batty.fpl.myc", "unibus.pris.fpl.myc"]);
+        let scrapeable = seen.iter().filter(|one| one.holds("soil:metrics")).collect::<Vec<_>>();
+        assert_eq!(scrapeable.len(), 1);
+        assert_eq!(scrapeable[0].healthz(), Some("/healthz"));
+        assert_eq!(scrapeable[0].readyz(), None);
+    }
+
+    #[test]
+    fn an_observer_does_not_see_a_withdrawn_lease() {
+        let home = tempfile::tempdir().unwrap();
+        let publisher = Publisher::new(home.path(), "node-a");
+        publisher.publish(&lease()).unwrap();
+        assert_eq!(observe(publisher.path()).unwrap().len(), 1);
+        publisher.withdraw("unibus").unwrap();
+        assert!(observe(publisher.path()).unwrap().is_empty());
     }
 }
