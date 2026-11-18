@@ -166,8 +166,10 @@ impl Lease {
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
         held.insert(capability.into());
-        self.attributes
-            .insert(CAPABILITIES.into(), held.into_iter().collect::<Vec<_>>().join(" "));
+        self.attributes.insert(
+            CAPABILITIES.into(),
+            held.into_iter().collect::<Vec<_>>().join(" "),
+        );
         self
     }
 
@@ -272,6 +274,78 @@ impl Lease {
             },
         }
     }
+}
+
+/// A Spore's `[anycast]` claim, read from its manifest.
+///
+/// The manifest is the interface: mycelium reads a file, not a crate, so the
+/// package format and the mesh stay uncoupled. A Spore that wants a name writes
+/// the same table it already writes; nothing in soil has to call anything here.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SporeManifest {
+    #[serde(default)]
+    spore: SporeHeader,
+    anycast: Option<AnycastClaim>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct SporeHeader {
+    id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct AnycastClaim {
+    name: String,
+    kind: String,
+    #[serde(default)]
+    alpns: Vec<String>,
+    #[serde(default = "default_ttl")]
+    ttl_secs: u64,
+}
+
+fn default_ttl() -> u64 {
+    DEFAULT_TTL_SECS
+}
+
+/// The lease a Spore's manifest asks for, if it asks for one.
+///
+/// `None` means the package declares no `[anycast]`, which is the default and is
+/// not an error: most Spores are local-only. Endpoints are the caller's, because
+/// which address a client can dial is one machine's fact and never the
+/// package's.
+pub fn lease_from_manifest(
+    root: impl AsRef<Path>,
+    endpoints: &[String],
+) -> Result<Option<Lease>, Error> {
+    let root = root.as_ref();
+    let manifest = if root.is_dir() {
+        root.join("spore.toml")
+    } else {
+        root.to_path_buf()
+    };
+    let source = std::fs::read_to_string(&manifest)
+        .map_err(|error| invalid(format!("read {}: {error}", manifest.display())))?;
+    let parsed: SporeManifest = toml::from_str(&source)
+        .map_err(|error| invalid(format!("parse {}: {error}", manifest.display())))?;
+    let Some(claim) = parsed.anycast else {
+        return Ok(None);
+    };
+    let mut lease = Lease::new(claim.kind).label(claim.name).ttl(claim.ttl_secs);
+    // A Spore's gateway answers both probes before the grant table, so they are
+    // a property of being served, not something each package opts into. Filling
+    // them here is what stops a publisher advertising a service that a probe
+    // then reads as a 404 outage.
+    lease = lease.healthz("/healthz").readyz("/readyz");
+    for endpoint in endpoints {
+        lease = lease.endpoint(endpoint.clone());
+    }
+    if let Some(id) = parsed.spore.id {
+        lease = lease.attribute("spore_id", id);
+    }
+    if !claim.alpns.is_empty() {
+        lease = lease.attribute("alpns", claim.alpns.join(" "));
+    }
+    Ok(Some(lease))
 }
 
 /// How often to renew: a third of the lease, so two beats can be lost before a
@@ -541,6 +615,48 @@ mod tests {
     }
 
     #[test]
+    fn a_spore_manifest_supplies_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("spore.toml"),
+            "[spore]\nid = \"dev.fungos.confluence\"\n\n[anycast]\nname = \"confluence\"\nkind = \"confluence\"\nalpns = [\"soil/http/1\"]\nttl_secs = 240\n",
+        )
+        .unwrap();
+        let lease = lease_from_manifest(dir.path(), &["https://100.74.130.83:8790".into()])
+            .unwrap()
+            .expect("the manifest claims a name");
+        assert_eq!(lease.kind(), "confluence");
+        assert_eq!(lease.ttl_secs(), 240);
+        assert_eq!(
+            lease.attributes().get("spore_id").map(String::as_str),
+            Some("dev.fungos.confluence")
+        );
+        assert_eq!(
+            lease.attributes().get("healthz").map(String::as_str),
+            Some("/healthz")
+        );
+        assert_eq!(
+            lease.attributes().get("alpns").map(String::as_str),
+            Some("soil/http/1")
+        );
+    }
+
+    #[test]
+    fn a_spore_without_a_claim_asks_for_no_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("spore.toml"),
+            "[spore]\nid = \"dev.fungos.local\"\n",
+        )
+        .unwrap();
+        assert!(
+            lease_from_manifest(dir.path(), &["https://127.0.0.1:8790".into()])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_label_is_validated_by_the_zones_own_rule() {
         let home = tempfile::tempdir().unwrap();
         let publisher = Publisher::new(home.path(), "node-a");
@@ -549,16 +665,12 @@ mod tests {
         assert_eq!(catalog.observations[0].value.names, ["unibus"]);
 
         // A label is not a name: a dot would escape the zone's composition.
-        assert!(
-            Publisher::new(home.path(), "node-b")
-                .publish(&lease().label("unibus.pris.fpl"))
-                .is_err()
-        );
-        assert!(
-            Publisher::new(home.path(), "node-b")
-                .publish(&lease().label("Unibus"))
-                .is_err()
-        );
+        assert!(Publisher::new(home.path(), "node-b")
+            .publish(&lease().label("unibus.pris.fpl"))
+            .is_err());
+        assert!(Publisher::new(home.path(), "node-b")
+            .publish(&lease().label("Unibus"))
+            .is_err());
     }
 
     #[test]
@@ -580,8 +692,14 @@ mod tests {
             lease.attributes().get(CAPABILITIES).map(String::as_str),
             Some("soil:metrics soil:unibus")
         );
-        assert_eq!(lease.attributes().get("metrics").map(String::as_str), Some("prometheus"));
-        assert_eq!(lease.attributes().get("healthz").map(String::as_str), Some("/healthz"));
+        assert_eq!(
+            lease.attributes().get("metrics").map(String::as_str),
+            Some("prometheus")
+        );
+        assert_eq!(
+            lease.attributes().get("healthz").map(String::as_str),
+            Some("/healthz")
+        );
     }
 
     #[test]
@@ -608,7 +726,10 @@ mod tests {
         let seen = observe(&path).unwrap();
         let names = seen.iter().map(|one| one.name.clone()).collect::<Vec<_>>();
         assert_eq!(names, ["geode.batty.fpl.myc", "unibus.pris.fpl.myc"]);
-        let scrapeable = seen.iter().filter(|one| one.holds("soil:metrics")).collect::<Vec<_>>();
+        let scrapeable = seen
+            .iter()
+            .filter(|one| one.holds("soil:metrics"))
+            .collect::<Vec<_>>();
         assert_eq!(scrapeable.len(), 1);
         assert_eq!(scrapeable[0].healthz(), Some("/healthz"));
         assert_eq!(scrapeable[0].readyz(), None);
