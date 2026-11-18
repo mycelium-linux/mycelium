@@ -39,8 +39,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
     match command.as_str() {
         "publish" => {
-            let every = renewal_interval(options.every, options.ttl)
-                .map_err(|error| error.to_string())?;
+            let every =
+                renewal_interval(options.every, options.ttl).map_err(|error| error.to_string())?;
             let lease = options.lease()?;
             loop {
                 publisher
@@ -67,7 +67,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             println!(
                 "{} {kind} from {}",
-                if removed { "withdrew" } else { "nothing to withdraw for" },
+                if removed {
+                    "withdrew"
+                } else {
+                    "nothing to withdraw for"
+                },
                 publisher.path().display()
             );
             Ok(())
@@ -121,6 +125,7 @@ struct Options {
     path: Option<std::path::PathBuf>,
     once: bool,
     tag: Option<(String, Option<String>)>,
+    manifest: Option<std::path::PathBuf>,
     capabilities: Vec<String>,
     metrics: Option<String>,
     healthz: Option<String>,
@@ -140,6 +145,7 @@ impl Options {
             path: None,
             once: false,
             tag: None,
+            manifest: None,
             capabilities: Vec::new(),
             metrics: None,
             healthz: None,
@@ -193,6 +199,10 @@ impl Options {
                     options.once = true;
                     index += 1;
                 }
+                "--manifest" => {
+                    options.manifest = Some(value(index)?.into());
+                    index += 2;
+                }
                 "--tag" => {
                     let tag = value(index)?;
                     options.tag = Some(match tag.split_once('=') {
@@ -225,9 +235,11 @@ impl Options {
                 // Listing is an observation, not an assertion: it needs no
                 // identity of its own to read what the catalog already says.
             } else {
-                return Err("--node-id is the identity myceliumd already knows this node by; \
+                return Err(
+                    "--node-id is the identity myceliumd already knows this node by; \
                      it is the only thing a lease cannot guess"
-                    .into());
+                        .into(),
+                );
             }
         }
         Ok(options)
@@ -241,13 +253,28 @@ impl Options {
     }
 
     fn lease(&self) -> Result<Lease, String> {
-        let Some(kind) = &self.kind else {
-            return Err("publish needs --kind".into());
+        let mut lease = match &self.manifest {
+            // A Spore says what name it wants in its own manifest; mycelium
+            // reads the file and publishes. Nothing in soil has to call us, and
+            // we do not depend on soil: the manifest is the interface.
+            Some(path) => mycelium_service_lease::lease_from_manifest(path, &self.endpoints)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "{} declares no [anycast] claim, so there is nothing to announce",
+                        path.display()
+                    )
+                })?,
+            None => {
+                let Some(kind) = &self.kind else {
+                    return Err("publish needs --kind (or --manifest for a Spore)".into());
+                };
+                Lease::new(kind.clone()).ttl(self.ttl)
+            }
         };
         if self.endpoints.is_empty() {
             return Err("publish needs at least one --endpoint".into());
         }
-        let mut lease = Lease::new(kind.clone()).ttl(self.ttl);
         for endpoint in &self.endpoints {
             lease = lease.endpoint(endpoint.clone());
         }
