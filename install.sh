@@ -75,6 +75,7 @@ SOIL=ask
 BOB=ask
 OPERATOR=ask
 GEODE=ask
+DNS=yes
 FRONTDOOR=ask
 TRUST_CERT=ask
 PROFILE=full
@@ -149,6 +150,7 @@ Components:
   --operator / --no-operator
                          frontdoor, skills, completions, update policy (default yes)
   --geode / --no-geode   optional geode credential broker (default no)
+  --dns / --no-dns       local *.myc resolver and its system wiring (default yes)
   --frontdoor / --no-frontdoor
                          loopback HTTPS frontdoor plus its ingress services
                          (default yes; runs on its own service so a node profile
@@ -1870,6 +1872,8 @@ parse_args() {
             --no-operator) OPERATOR=no; declared OPERATOR; shift ;;
             --geode) GEODE=yes; declared GEODE; shift ;;
             --no-geode) GEODE=no; declared GEODE; shift ;;
+            --dns) DNS=yes; shift ;;
+            --no-dns) DNS=no; shift ;;
             --frontdoor) FRONTDOOR=yes; declared FRONTDOOR; shift ;;
             --no-frontdoor) FRONTDOOR=no; declared FRONTDOOR; shift ;;
             --profile) [ $# -ge 2 ] || die "--profile needs a name"; PROFILE=$2; shift 2 ;;
@@ -2138,7 +2142,7 @@ main() {
     setup_node
     apply_update_policy
     if [ "$VPN" = yes ]; then run_component vpn install_vpn; fi
-    run_component dns install_dns
+    if [ "$DNS" = yes ]; then run_component dns install_dns; fi
     if [ "$FRONTDOOR" = yes ]; then run_component frontdoor install_frontdoor; fi
     if [ "$OPERATOR" = yes ]; then run_component operator install_operator; fi
     if [ "$GEODE" = yes ]; then run_component geode install_geode; fi
