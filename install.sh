@@ -48,6 +48,9 @@ RELEASE_VERSION=
 RELEASE_BASE=
 RELEASE_DIR=
 RELEASE_CHANNEL=
+# Release public keys this host will accept, hex. Repeatable; seeded from the
+# environment so a fleet installer can pin the authority's key once.
+RELEASE_KEYS=${MYCELIUM_RELEASE_KEYS:-}
 IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
 VFS_REPO=${VFS_REPO:-https://github.com/mycelium-linux/fungos-vfs.git}
 SOIL_REPO=${SOIL_REPO:-https://github.com/mycelium-linux/soil.git}
@@ -131,6 +134,8 @@ Core:
   --release TAG          download published release binaries (TAG, or latest)
                          (default when this script is not running in a checkout)
   --release-base URL     override the release download base (mirror or local test dir)
+  --release-key HEX      release key to trust for automatic updates (repeatable;
+                         default: MYCELIUM_RELEASE_KEYS)
   --prefix DIR           install user binaries under DIR/bin (default ~/.local)
   --force                rebuild iroh-tun instead of reusing the installed binary
 
@@ -1879,6 +1884,7 @@ parse_args() {
             --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; BIN_SRC=$2; shift 2 ;;
             --release) [ $# -ge 2 ] || die "--release needs a tag"; RELEASE_VERSION=$2; shift 2 ;;
             --release-base) [ $# -ge 2 ] || die "--release-base needs a URL"; RELEASE_BASE=$2; shift 2 ;;
+            --release-key) [ $# -ge 2 ] || die "--release-key needs a hex key"; RELEASE_KEYS="$RELEASE_KEYS $2"; shift 2 ;;
             --prefix) [ $# -ge 2 ] || die "--prefix needs a directory"; PREFIX=$2; LOCAL_BIN=$PREFIX/bin; shift 2 ;;
             --channel) [ $# -ge 2 ] || die "--channel needs stable or canary"; CHANNEL=$2; shift 2 ;;
             --overlay) [ $# -ge 2 ] || die "--overlay needs a CIDR"; OVERLAY=$2; shift 2 ;;
@@ -1945,6 +1951,49 @@ resolve_updates_default() {
     fi
 }
 
+# Where this host gets releases from, and which keys may sign them. Only a
+# release install has a source; only a pinned key makes it usable. Without one,
+# `update fetch` refuses rather than trusting whatever the channel serves.
+write_release_source() {
+    [ -n "$RELEASE_VERSION" ] || return 0
+    if [ -z "$RELEASE_KEYS" ]; then
+        if [ "$ENABLE_UPDATES" = yes ]; then
+            warn "no release key pinned; automatic updates cannot verify a download (pass --release-key HEX)"
+        fi
+        return 0
+    fi
+    base=$RELEASE_BASE
+    if [ -z "$base" ]; then
+        case "$RELEASE_VERSION" in
+            latest) base="https://github.com/$RELEASE_REPO/releases/latest/download" ;;
+            v*) base="https://github.com/$RELEASE_REPO/releases/download/$RELEASE_VERSION" ;;
+            *) base="https://github.com/$RELEASE_REPO/releases/download/v$RELEASE_VERSION" ;;
+        esac
+    fi
+    channel=${RELEASE_CHANNEL:-stable}
+    path="$MYCELIUM_HOME/release-source.json"
+    if [ "$DRY_RUN" = 1 ]; then
+        note "would write $path (base $base, channel $channel)"
+        return 0
+    fi
+    keys=
+    count=0
+    for key in $RELEASE_KEYS; do
+        keys="$keys${keys:+, }\"$key\""
+        count=$((count + 1))
+    done
+    mkdir_p "$MYCELIUM_HOME"
+    cat >"$path" <<EOF
+{
+  "base": "$base",
+  "channel": "$channel",
+  "trusted_keys": [$keys]
+}
+EOF
+    chmod 644 "$path"
+    note "wrote $path (channel $channel, $count pinned key(s))"
+}
+
 apply_update_policy() {
     MYC="$LOCAL_BIN/mycelium"
     [ -x "$MYC" ] || return 0
@@ -1962,6 +2011,9 @@ apply_update_policy() {
         set -- "$@" --write
         if run "$MYC" "$@"; then
             note "automatic updates enabled${RELEASE_CHANNEL:+ on channel $RELEASE_CHANNEL}"
+            if [ -n "$RELEASE_VERSION" ] && [ ! -f "$MYCELIUM_HOME/release-source.json" ]; then
+                warn "no release source: updates can only use artifacts already on this host"
+            fi
         else
             warn "could not enable automatic updates; run: mycelium update policy enable --write"
         fi
@@ -2082,6 +2134,7 @@ main() {
     pause_updater
     if [ "$ENABLE_UPDATES" = yes ]; then trap resume_updater EXIT; fi
     install_mycelium
+    write_release_source
     setup_node
     apply_update_policy
     if [ "$VPN" = yes ]; then run_component vpn install_vpn; fi
