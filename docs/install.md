@@ -234,6 +234,40 @@ not write files, start services, or ask for sudo.
   `~/Documents/src/bob` checkout avoids a clone. Scheduler URL/token are optional
   and prompt only when the component is selected.
 
+## Canary channel
+
+A second install can run beside the stable one, so a development build is tested
+against real state without touching the machine's stable install:
+
+```sh
+./install.sh --channel canary --release latest --yes   # or --source .
+mycelium-canary doctor
+mycelium-canary daemon status
+```
+
+| | stable | canary |
+|---|---|---|
+| State | `~/.mycelium` | `~/.mycelium-canary` |
+| Binaries | `~/.local/bin` | `~/.local/canary/bin`, plus `~/.local/bin/mycelium-canary` |
+| Service label | `dev.fpl.mycelium` | `dev.fpl.mycelium-canary` |
+| Installs | overlay, DNS, frontdoor, operator, geode | daemon and CLI only |
+
+The split is not cosmetic. The system-wide pieces are single-owner by nature:
+the DNS resolver owns `127.0.0.1:53` and `/etc/resolver/myc`, the ingress owns
+`127.0.0.1:443` and `:80`, and the tunnel needs root. A canary install leaves
+all of them to stable, so switching channels can never take the machine's name
+resolution or its ingress away from the install that people depend on. Canary
+is for iterating on the daemon, the CLI and the protocol; a canary frontdoor or
+tunnel is a follow-up that needs the service labels in the CLI itself to become
+channel-aware.
+
+Canary installs are updated by running the installer again. Automatic updates
+stay off for canary: the updater agent carries no `MYCELIUM_HOME`, so an enabled
+canary updater would replace the stable binary.
+
+Remove just that channel with `./uninstall.sh --channel canary` (add `--purge` to
+drop its state as well).
+
 ## Removing an install
 
 `uninstall.sh` stops and removes what the installer and the CLI put on the
