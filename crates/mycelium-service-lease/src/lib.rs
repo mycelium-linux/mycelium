@@ -348,6 +348,36 @@ pub fn lease_from_manifest(
     Ok(Some(lease))
 }
 
+/// Every Spore in an installed store that claims a name.
+///
+/// The store is the standard install location (`~/.local/share/fungos/spores`),
+/// one directory per Spore with its manifest beside its module. Scanning it is
+/// what makes this configuration-and-install: dropping a package in the store is
+/// the whole of the act, and a package that claims nothing is simply skipped.
+pub fn leases_from_store(
+    root: impl AsRef<Path>,
+    endpoints: &[String],
+) -> Result<Vec<Lease>, Error> {
+    let root = root.as_ref();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut leases = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if !path.is_dir() || !path.join("spore.toml").is_file() {
+            continue;
+        }
+        if let Some(lease) = lease_from_manifest(&path, endpoints)? {
+            leases.push(lease);
+        }
+    }
+    leases.sort_by(|left, right| left.kind().cmp(right.kind()));
+    Ok(leases)
+}
+
 /// How often to renew: a third of the lease, so two beats can be lost before a
 /// client stops seeing this node.
 pub fn renew_every(ttl_secs: u64) -> u64 {

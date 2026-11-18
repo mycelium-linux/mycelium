@@ -41,17 +41,23 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "publish" => {
             let every =
                 renewal_interval(options.every, options.ttl).map_err(|error| error.to_string())?;
-            let lease = options.lease()?;
+            let leases = options.leases()?;
+            if leases.is_empty() {
+                return Err("nothing to publish: no package in this store claims a name".into());
+            }
             loop {
-                publisher
-                    .publish(&lease)
-                    .map_err(|error| error.to_string())?;
-                println!(
-                    "published {} for {}, renewing every {every}s into {}",
-                    lease.kind(),
-                    lease.ttl_secs(),
-                    publisher.path().display()
-                );
+                for lease in &leases {
+                    let id = publisher
+                        .publish(lease)
+                        .map_err(|error| error.to_string())?;
+                    println!(
+                        "published {} as {} for {}, renewing every {every}s into {}",
+                        lease.kind(),
+                        id.0,
+                        lease.ttl_secs(),
+                        publisher.path().display()
+                    );
+                }
                 if options.once {
                     return Ok(());
                 }
@@ -126,6 +132,7 @@ struct Options {
     once: bool,
     tag: Option<(String, Option<String>)>,
     manifest: Option<std::path::PathBuf>,
+    store: Option<std::path::PathBuf>,
     capabilities: Vec<String>,
     metrics: Option<String>,
     healthz: Option<String>,
@@ -146,6 +153,7 @@ impl Options {
             once: false,
             tag: None,
             manifest: None,
+            store: None,
             capabilities: Vec::new(),
             metrics: None,
             healthz: None,
@@ -203,6 +211,10 @@ impl Options {
                     options.manifest = Some(value(index)?.into());
                     index += 2;
                 }
+                "--store" => {
+                    options.store = Some(value(index)?.into());
+                    index += 2;
+                }
                 "--tag" => {
                     let tag = value(index)?;
                     options.tag = Some(match tag.split_once('=') {
@@ -252,7 +264,50 @@ impl Options {
         })
     }
 
+    fn leases(&self) -> Result<Vec<Lease>, String> {
+        match &self.store {
+            // The store is the standard install location: one directory per
+            // Spore. Scanning it is what makes this configuration and install
+            // rather than a command per package.
+            Some(store) => mycelium_service_lease::leases_from_store(store, &self.endpoints)
+                .map_err(|error| error.to_string())
+                .map(|leases| {
+                    leases
+                        .into_iter()
+                        .map(|lease| self.decorate(lease))
+                        .collect()
+                }),
+            None => Ok(vec![self.lease()?]),
+        }
+    }
+
+    /// Flags that apply to any lease, whether it came from a package or a store.
+    fn decorate(&self, mut lease: Lease) -> Lease {
+        for capability in &self.capabilities {
+            lease = lease.capability(capability.clone());
+        }
+        if let Some(dialect) = &self.metrics {
+            lease = lease.metrics(dialect.clone());
+        }
+        if let Some(path) = &self.healthz {
+            lease = lease.healthz(path.clone());
+        }
+        if let Some(path) = &self.readyz {
+            lease = lease.readyz(path.clone());
+        }
+        for (key, value) in &self.attributes {
+            lease = lease.attribute(key.clone(), value.clone());
+        }
+        lease
+    }
+
     fn lease(&self) -> Result<Lease, String> {
+        if let Some(store) = &self.store {
+            return Err(format!(
+                "{} is a store, not a package; publish --store handles it",
+                store.display()
+            ));
+        }
         let mut lease = match &self.manifest {
             // A Spore says what name it wants in its own manifest; mycelium
             // reads the file and publishes. Nothing in soil has to call us, and
