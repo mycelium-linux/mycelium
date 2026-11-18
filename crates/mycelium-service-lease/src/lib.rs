@@ -106,6 +106,7 @@ pub fn observe(path: &Path) -> Result<Vec<Observed>, Error> {
 #[derive(Debug, Clone)]
 pub struct Lease {
     kind: String,
+    labels: BTreeSet<String>,
     endpoints: BTreeSet<String>,
     attributes: BTreeMap<String, String>,
     ttl_secs: u64,
@@ -115,6 +116,7 @@ impl Lease {
     pub fn new(kind: impl Into<String>) -> Self {
         Self {
             kind: kind.into(),
+            labels: BTreeSet::new(),
             endpoints: BTreeSet::new(),
             attributes: BTreeMap::new(),
             ttl_secs: DEFAULT_TTL_SECS,
@@ -132,6 +134,19 @@ impl Lease {
     pub fn attribute(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.attributes.insert(key.into(), value.into());
         self
+    }
+
+    /// The label this service asks the zone for. A lease never spells a full
+    /// name: the zone owns the site and the node, and a service that composed
+    /// its own name could claim someone else's. Validation is the zone's own
+    /// rule, so there is exactly one definition of a legal label.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.labels.insert(label.into());
+        self
+    }
+
+    pub fn labels(&self) -> &BTreeSet<String> {
+        &self.labels
     }
 
     pub fn ttl(mut self, secs: u64) -> Self {
@@ -201,6 +216,14 @@ impl Lease {
         if self.endpoints.is_empty() {
             return Err(invalid("a lease with no endpoint names nothing to dial"));
         }
+        for label in &self.labels {
+            if !mycelium_dns_policy::service_names::valid_label(label) {
+                return Err(invalid(format!(
+                    "label {label:?} is not one the zone can compose; a label is lowercase, \
+                     1..=63 characters, no dot, no leading or trailing hyphen"
+                )));
+            }
+        }
         if self.endpoints.len() > 32 {
             return Err(invalid("a lease carries at most 32 endpoints"));
         }
@@ -238,10 +261,10 @@ impl Lease {
             confidence: Confidence::Strong,
             value: Service {
                 kind: self.kind.clone(),
-                // A label the owner asks for, not a name: the zone turns a
-                // label into `unibus.pris.fpl.myc`, and a lease that spelled a
-                // full name would be claiming the zone's job.
-                names: Vec::new(),
+                // Labels, not names: the zone turns `unibus` into
+                // `unibus.pris.fpl.myc`, and a lease that spelled a full name
+                // would be taking the zone's job.
+                names: self.labels.iter().cloned().collect(),
                 endpoints: self.endpoints.clone(),
                 protocols: BTreeSet::new(),
                 formats: BTreeSet::new(),
@@ -515,6 +538,27 @@ mod tests {
         let publisher = Publisher::at(&path, "node-a");
         assert!(publisher.publish(&lease()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{not json");
+    }
+
+    #[test]
+    fn a_label_is_validated_by_the_zones_own_rule() {
+        let home = tempfile::tempdir().unwrap();
+        let publisher = Publisher::new(home.path(), "node-a");
+        publisher.publish(&lease().label("unibus")).unwrap();
+        let catalog = read(publisher.path());
+        assert_eq!(catalog.observations[0].value.names, ["unibus"]);
+
+        // A label is not a name: a dot would escape the zone's composition.
+        assert!(
+            Publisher::new(home.path(), "node-b")
+                .publish(&lease().label("unibus.pris.fpl"))
+                .is_err()
+        );
+        assert!(
+            Publisher::new(home.path(), "node-b")
+                .publish(&lease().label("Unibus"))
+                .is_err()
+        );
     }
 
     #[test]

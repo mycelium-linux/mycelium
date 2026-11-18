@@ -7,6 +7,9 @@ description = "Publish an application service lease into the catalog myceliumd o
 
 [dependencies]
 fpl-resource-observation = { path = "../fpl-resource-observation" }
+# One naming rule: a lease carries the label it asks for and the zone composes
+# the name, so validation must be the zone's own, not a second copy here.
+mycelium-dns-policy = { path = "../mycelium-dns-policy" }
 serde_json = "1"
 
 [dev-dependencies]
