@@ -1,8 +1,8 @@
 //! Symmetric, transport-neutral messages exchanged by Mycelium peers.
 
 pub mod frontdoor_usage;
-pub mod profile;
 pub mod identity;
+pub mod profile;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;

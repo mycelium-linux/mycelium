@@ -3542,11 +3542,7 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) {
 /// A peer topology snapshot whose content address this node already merged
 /// needs no merge. An empty digest comes from a peer that predates the field,
 /// so those keep the old behaviour.
-fn should_merge_snapshot(
-    applied: &BTreeMap<String, String>,
-    origin: &str,
-    digest: &str,
-) -> bool {
+fn should_merge_snapshot(applied: &BTreeMap<String, String>, origin: &str, digest: &str) -> bool {
     digest.is_empty() || applied.get(origin).map(String::as_str) != Some(digest)
 }
 

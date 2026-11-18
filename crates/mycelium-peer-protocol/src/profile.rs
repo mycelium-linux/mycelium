@@ -66,8 +66,7 @@ pub fn edge_profile(health: &HostHealth, now: u64) -> EdgeProfile {
         reasons.push(format!("health snapshot is {age}s old"));
     }
 
-    let uptime =
-        (health.uptime_seconds as f64).min(FULL_UPTIME_SECONDS) / FULL_UPTIME_SECONDS;
+    let uptime = (health.uptime_seconds as f64).min(FULL_UPTIME_SECONDS) / FULL_UPTIME_SECONDS;
     let load = if health.logical_cpus == 0 {
         1.0
     } else {
@@ -120,32 +119,53 @@ mod tests {
 
     #[test]
     fn battery_and_wireless_hosts_are_never_ingress_candidates() {
-        let battery = edge_profile(&host(PowerSource::Battery, LinkKind::Wired, 90 * 86_400), 1_000);
+        let battery = edge_profile(
+            &host(PowerSource::Battery, LinkKind::Wired, 90 * 86_400),
+            1_000,
+        );
         assert!(!battery.eligible);
-        assert!(battery.reasons.iter().any(|reason| reason.contains("battery")));
+        assert!(battery
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("battery")));
 
-        let wireless = edge_profile(&host(PowerSource::Mains, LinkKind::Wireless, 90 * 86_400), 1_000);
+        let wireless = edge_profile(
+            &host(PowerSource::Mains, LinkKind::Wireless, 90 * 86_400),
+            1_000,
+        );
         assert!(!wireless.eligible);
-        assert!(wireless.reasons.iter().any(|reason| reason.contains("wireless")));
+        assert!(wireless
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("wireless")));
     }
 
     #[test]
     fn a_host_that_has_not_held_an_hour_is_excluded() {
         let profile = edge_profile(&host(PowerSource::Mains, LinkKind::Wired, 3_599), 1_000);
         assert!(!profile.eligible);
-        assert!(profile.reasons.iter().any(|reason| reason.contains("uptime")));
+        assert!(profile
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("uptime")));
     }
 
     #[test]
     fn a_stale_snapshot_describes_nothing() {
-        let profile = edge_profile(&host(PowerSource::Mains, LinkKind::Wired, 30 * 86_400), 1_121);
+        let profile = edge_profile(
+            &host(PowerSource::Mains, LinkKind::Wired, 30 * 86_400),
+            1_121,
+        );
         assert!(!profile.eligible);
         assert!(profile.reasons.iter().any(|reason| reason.contains("old")));
     }
 
     #[test]
     fn a_long_lived_wired_host_outranks_a_fresh_one() {
-        let settled = edge_profile(&host(PowerSource::Mains, LinkKind::Wired, 21 * 86_400), 1_000);
+        let settled = edge_profile(
+            &host(PowerSource::Mains, LinkKind::Wired, 21 * 86_400),
+            1_000,
+        );
         let fresh = edge_profile(&host(PowerSource::Mains, LinkKind::Wired, 2 * 3_600), 1_000);
         assert!(settled.eligible && fresh.eligible);
         assert!(settled.score > fresh.score);
@@ -166,7 +186,10 @@ mod tests {
 
     #[test]
     fn unknown_power_does_not_exclude_but_says_so() {
-        let profile = edge_profile(&host(PowerSource::Unknown, LinkKind::Unknown, 30 * 86_400), 1_000);
+        let profile = edge_profile(
+            &host(PowerSource::Unknown, LinkKind::Unknown, 30 * 86_400),
+            1_000,
+        );
         assert!(profile.eligible);
         assert_eq!(profile.reasons.len(), 2);
     }
