@@ -12,10 +12,14 @@ use myceliumd::protocol::Request;
 use serde_json::Value;
 
 pub async fn run(args: &[String]) -> Result<Vec<String>, String> {
+    // `mycelium iroh-tun` with no subcommand means `status`; slicing `args[1..]`
+    // on an empty vector is what made the bare command panic instead of
+    // answering, so the tail is taken as a slice‑or‑empty once here.
+    let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str).unwrap_or("status") {
-        "status" => status(&args[1..]).await,
-        "config" => config(&args[1..]).await,
-        "address" => address(&args[1..]).await,
+        "status" => status(rest).await,
+        "config" => config(rest).await,
+        "address" => address(rest).await,
         other => Err(format!(
             "unknown iroh-tun action `{other}`; try `status`, `config` or `address`"
         )),
