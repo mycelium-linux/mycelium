@@ -23,6 +23,7 @@ mod pair;
 #[cfg(feature = "iroh-sync")]
 mod pair_iroh;
 mod pulse;
+mod release_source;
 mod setup;
 mod skills;
 mod ssh_access;
@@ -184,6 +185,8 @@ usage:
                             [--enabled true|false] --write
   mycelium debug hardware [PEER] [--json]
   mycelium releases list [--json]
+  mycelium releases manifest --binary PATH --version V --channel C --target T --signing-key PATH [--json]
+  mycelium releases verify --manifest PATH [--trusted-key KEY]... [--json]
   mycelium releases keygen --path PATH --write [--json]
   mycelium releases publish --binary PATH --signing-key PATH --version VERSION --channel CHANNEL [--target TRIPLE] --write [--dry-run] [--json]
   mycelium releases publish-set --manifest PATH --signing-key PATH --write [--dry-run] [--json]
@@ -239,6 +242,7 @@ usage:
   mycelium update status [--channel CHANNEL] [--fleet] [--json]
   mycelium update report [--channel CHANNEL] [--json] [--fail-on-updates]
   mycelium update apply [--channel CHANNEL] [--path INSTALLED-BINARY] --write
+  mycelium update fetch [--channel CHANNEL] [--source URL] --write
   mycelium update policy status [--json]
   mycelium update policy enable [--channel CHANNEL] [--minimum-age 15m] [--rollout-window 30m] [--retry-backoff 1h] --write
   mycelium update policy disable --write
@@ -326,6 +330,7 @@ struct Flags {
     digest: Option<String>,
     statement: Option<String>,
     signing_key: Option<String>,
+    trusted_keys: Vec<String>,
     version: Option<String>,
     channel: Option<String>,
     address: Option<String>,
@@ -369,6 +374,7 @@ fn parse_flags(args: &[String]) -> Flags {
         digest: None,
         statement: None,
         signing_key: None,
+        trusted_keys: Vec::new(),
         version: None,
         channel: None,
         address: None,
@@ -418,6 +424,12 @@ fn parse_flags(args: &[String]) -> Flags {
                 i += 1;
                 if let Some(target) = args.get(i) {
                     f.targets.push(target.clone());
+                }
+            }
+            "--trusted-key" => {
+                i += 1;
+                if let Some(key) = args.get(i) {
+                    f.trusted_keys.push(key.clone());
                 }
             }
             "--tang" => {
@@ -1264,6 +1276,15 @@ async fn enroll_command(args: &[String]) -> Result<Vec<String>, ClientError> {
 async fn releases(args: &[String]) -> Result<Vec<String>, ClientError> {
     let flags = parse_flags(args);
     let action = flags.rest.first().map(String::as_str).unwrap_or("list");
+    // Signing and verifying a manifest is a property of bytes and keys, not of a
+    // running daemon, so these two work offline: release.sh signs from a CI box
+    // and a host can verify what it downloaded without trusting the network.
+    if action == "manifest" {
+        return release_manifest(&flags);
+    }
+    if action == "verify" {
+        return release_verify(&flags);
+    }
     let request = match action {
         "list" => Request::ReleaseList,
         "keygen" => Request::ReleaseKeygen {
@@ -1333,6 +1354,108 @@ async fn releases(args: &[String]) -> Result<Vec<String>, ClientError> {
             serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
         ])
     }
+}
+
+/// Sign one release binary's digest, offline. `scripts/release.sh` runs this per
+/// target and publishes the collected manifests beside the archives, so a host
+/// can verify a download without a daemon and without trusting the channel that
+/// delivered it.
+fn release_manifest(flags: &Flags) -> Result<Vec<String>, ClientError> {
+    let binary = flags
+        .binary
+        .as_deref()
+        .ok_or(err_usage("releases manifest needs --binary"))?;
+    let version = flags
+        .version
+        .clone()
+        .ok_or(err_usage("releases manifest needs --version"))?;
+    let channel = flags
+        .channel
+        .clone()
+        .ok_or(err_usage("releases manifest needs --channel"))?;
+    let target = flags
+        .targets
+        .first()
+        .cloned()
+        .or_else(|| {
+            mycelium_peer_protocol::local_compatible_targets()
+                .first()
+                .cloned()
+        })
+        .ok_or(err_usage("releases manifest needs --target"))?;
+    let signing_key = flags
+        .signing_key
+        .as_deref()
+        .ok_or(err_usage("releases manifest needs --signing-key"))?;
+    let bytes = std::fs::read(expand_home(binary)).map_err(ClientError::Io)?;
+    let key_bytes = std::fs::read(expand_home(signing_key)).map_err(ClientError::Io)?;
+    let key_bytes: [u8; 32] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| err_usage("a release signing key is exactly 32 bytes"))?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
+    let manifest =
+        mycelium_peer_protocol::ReleaseManifest::sign(&key, version, channel, target, &bytes)
+            .map_err(|error| err_usage(&error.to_string()))?;
+    Ok(vec![
+        serde_json::to_string(&manifest).map_err(|error| err_usage(&error.to_string()))?
+    ])
+}
+
+/// Verify a manifest file (one object or an array) against the keys this host
+/// trusts. Exits non-zero on any signature or trust failure so a script can use
+/// it as a gate before installing anything.
+fn release_verify(flags: &Flags) -> Result<Vec<String>, ClientError> {
+    let path = flags
+        .manifest
+        .as_deref()
+        .ok_or(err_usage("releases verify needs --manifest"))?;
+    let bytes = std::fs::read(expand_home(path)).map_err(ClientError::Io)?;
+    let manifests =
+        match serde_json::from_slice::<Vec<mycelium_peer_protocol::ReleaseManifest>>(&bytes) {
+            Ok(manifests) => manifests,
+            Err(_) => vec![serde_json::from_slice(&bytes)
+                .map_err(|error| err_usage(&format!("{path}: {error}")))?],
+        };
+    let mut trusted: Vec<String> = flags.trusted_keys.clone();
+    if let Ok(keys) = std::env::var("MYCELIUM_RELEASE_KEYS") {
+        trusted.extend(
+            keys.split([',', ' '])
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    if trusted.is_empty() {
+        return Err(err_usage(
+            "no trusted release keys; pass --trusted-key or set MYCELIUM_RELEASE_KEYS",
+        ));
+    }
+    if manifests.is_empty() {
+        // An empty set verifies vacuously, which would make a broken or replaced
+        // release asset look trustworthy. Nothing to verify is a failure.
+        return Err(err_usage(&format!("{path} contains no release manifests")));
+    }
+    let mut lines = Vec::new();
+    for manifest in manifests {
+        manifest
+            .verify()
+            .map_err(|error| err_usage(&format!("{}: {error}", manifest.version)))?;
+        if !trusted
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(&manifest.signer))
+        {
+            return Err(err_usage(&format!(
+                "{} is signed by {} which this host does not trust",
+                manifest.version, manifest.signer
+            )));
+        }
+        lines.push(format!(
+            "verified {} channel={} target={} digest={}",
+            manifest.version, manifest.channel, manifest.target, manifest.artifact_digest
+        ));
+    }
+    Ok(lines)
 }
 
 async fn packages(args: &[String]) -> Result<Vec<String>, ClientError> {
@@ -2471,6 +2594,26 @@ async fn update(args: &[String]) -> Result<Vec<String>, ClientError> {
     let flags = parse_flags(args);
     let action = flags.rest.first().map(String::as_str).unwrap_or("status");
     let fail_on_updates = args.iter().any(|arg| arg == "--fail-on-updates");
+    if action == "fetch" {
+        // Pull the release this channel names into the artifact store, verifying
+        // it against this host's pinned keys. `apply` and `auto-run` stay
+        // read-mostly: they consume what is already verified here.
+        let mut source = release_source::Source::load(&myceliumd::home_dir());
+        if let Some(base) = flags.source.clone() {
+            source.base = base;
+        }
+        if !flags.trusted_keys.is_empty() {
+            source.trusted_keys = flags.trusted_keys.clone();
+        }
+        let channel = flags
+            .channel
+            .clone()
+            .or_else(|| (!source.channel.is_empty()).then(|| source.channel.clone()))
+            .unwrap_or_else(myceliumd::updates::channel);
+        return release_source::fetch(&source, &channel, flags.write)
+            .await
+            .map_err(|error| err_usage(&error));
+    }
     if action == "apply" {
         let executable = std::env::current_exe().map_err(ClientError::Io)?;
         myceliumd::software_apt::require_native_executable(&executable)
@@ -2702,6 +2845,15 @@ async fn update_auto_run() -> Result<Vec<String>, ClientError> {
     policy.validate().map_err(|error| err_usage(&error))?;
     if !policy.enabled {
         return Ok(vec!["automatic updates disabled".into()]);
+    }
+    // An artifact that is not in the store cannot be applied, and nothing else
+    // on a member host ever downloads one. Try the configured release source
+    // first; a failure here is reported and does not stop the rest of the cycle.
+    let source = release_source::Source::load(&myceliumd::home_dir());
+    if source.is_configured() {
+        if let Err(error) = release_source::fetch(&source, &policy.channel, true).await {
+            eprintln!("mycelium: release source: {error}");
+        }
     }
     let mut client = connect().await?;
     let release_list = client.call(&Request::ReleaseList).await?;

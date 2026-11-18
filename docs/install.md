@@ -30,6 +30,13 @@ source or `--bin-dir` build leaves them off: it has no release to update to,
 and the signed channel may be older than the build it replaced. `--enable-updates`
 and `--no-enable-updates` override either default.
 
+Updates verify before they download: a release carries signed manifests, and the
+installer records the base and the keys it is allowed to trust in
+`release-source.json` when `--release-key HEX` is passed (repeatable, or
+`MYCELIUM_RELEASE_KEYS`). Without a pinned key the source is not written and the
+host only applies artifacts that are already on it. See
+[releases.md](releases.md#where-an-artifact-comes-from).
+
 ## What a release install does and does not build
 
 The release archive carries `mycelium`, `myceliumd`, `mycelium-frontdoor`,

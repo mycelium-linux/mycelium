@@ -121,6 +121,32 @@ CIDs on the store channel and are not applied by `mycelium update`. Until then,
 the CLI report is the supported surface and the JSON shape is the interface to
 build against.
 
+## Where an artifact comes from
+
+A release now has a host-side source, not only a human running the installer:
+
+```sh
+mycelium update fetch --channel stable --write   # verify and stage
+mycelium update apply --channel stable --write   # activate what is staged
+```
+
+`release-source.json` in the node's home names the base (a GitHub release URL or a
+mirror) and the release keys this host accepts. The installer writes it for a
+release install when a key is pinned with `--release-key` (or
+`MYCELIUM_RELEASE_KEYS`); without a pinned key it is not written, because a
+source that verifies nothing is worse than no source.
+
+Each release publishes `release-manifests.json`: one signed manifest per target,
+over the digest of the binary that will run. `update fetch` refuses a manifest
+whose signature does not verify, or whose signer is not in the host's pinned
+set, before it looks at any bytes. The archive's own checksum in
+`release-metadata.json` is a transport check, not the trust anchor: it travels on
+the same channel as the archive.
+
+`update auto-run` calls the same fetch before it looks for a staged release, so a
+member host that has never had an artifact seeded on it can still update. When no
+source is configured it behaves exactly as before.
+
 ## Signing and notarization
 
 Release signing is Ed25519 under the fleet authority. Publishing a release
@@ -141,6 +167,9 @@ publishing its manifest. `mycelium doctor` surfaces this on macOS with
   implemented.
 - A binary built outside the signed release path has no matching digest, so
   doctor reports its release as `unrecorded` rather than guessing.
+- `--publish` now requires `--signing-key`, so a release cannot be published
+  without the manifests a host verifies; the mirror still needs the key pinned at
+  install time (`--release-key`).
 - Spore distribution is a separate channel. `soil-store` builds the signed CID
   catalog and `soil-spore` defines the package; the host install capability
   (`soil:spore.install`) is still the gate before fetching or applying Spores

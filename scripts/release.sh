@@ -536,6 +536,45 @@ write_release_metadata() {
     ASSETS+=("$dir/SHA256SUMS")
 }
 
+# A release a host can verify: one signed manifest per target, over the binary
+# that will run. The archive checksum beside it is not the trust anchor - it
+# travels on the same channel as the archive - so a published release without a
+# signing key is refused rather than published unverifiable.
+write_release_manifests() {
+    local dir="$OUT/v$VERSION"
+    local manifests="$dir/release-manifests.json"
+    local target
+    if [ "$DRY_RUN" = 1 ]; then
+        note "would write $manifests"
+        return 0
+    fi
+    if [ -z "$SIGNING_KEY" ]; then
+        if [ "$PUBLISH" = 1 ]; then
+            die "--publish needs --signing-key: a release without signed manifests cannot be verified by a host"
+        fi
+        note "no --signing-key; skipping release manifests"
+        return 0
+    fi
+    local binary="$ROOT/target/release/mycelium"
+    [ -x "$binary" ] || binary=$(command -v mycelium || true)
+    [ -n "$binary" ] && [ -x "$binary" ] || die "the mycelium CLI is needed to sign release manifests"
+    {
+        printf '[\n'
+        local first=1
+        for target in "${BUILT_TARGETS[@]}"; do
+            local staged="$dir/$target/mycelium"
+            [ -f "$staged" ] || die "missing $staged; cannot sign a manifest for $target"
+            [ "$first" = 1 ] || printf ',\n'
+            first=0
+            "$binary" releases manifest --binary "$staged" --version "$VERSION" \
+                --channel "$CHANNEL" --target "$target" --signing-key "$SIGNING_KEY"
+        done
+        printf '\n]\n'
+    } >"$manifests"
+    ASSETS+=("$manifests")
+    note "wrote $manifests"
+}
+
 publish_release() {
     [ "$PUBLISH" = 1 ] || return 0
     local tag="v$VERSION"
@@ -600,6 +639,7 @@ run_once() {
         build_target "$target"
         note "$target took $(( $(date +%s) - t0 ))s"
     done
+    write_release_manifests
     write_release_metadata
     publish_release
     publish_mesh
@@ -636,7 +676,8 @@ watch_tags() {
             [ -n "$REMOTE_HOST" ] && args+=(--remote-host "$REMOTE_HOST" --remote-session "$REMOTE_SESSION_PREFIX")
             [ -n "$REMOTE_MAC_HOST" ] && args+=(--remote-mac-host "$REMOTE_MAC_HOST")
             [ "$REMOTE_CLEAN" = 1 ] && args+=(--remote-clean)
-            [ "$MESH" = 1 ] && args+=(--mesh --signing-key "$SIGNING_KEY")
+            [ "$MESH" = 1 ] && args+=(--mesh)
+            [ -n "$SIGNING_KEY" ] && args+=(--signing-key "$SIGNING_KEY")
             if ( cd "$worktree" && "$worktree/scripts/release.sh" "${args[@]}" ); then
                 printf '%s\n' "$tag" >>"$released"
                 say "released $tag"

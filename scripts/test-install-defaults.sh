@@ -162,4 +162,28 @@ apply_channel_defaults >/dev/null
 [ "$VPN" = yes ] || fail "an explicit --vpn was dropped on canary"
 ok "an explicit flag still wins on canary"
 
+# The update source is what makes a release install self-updating: a base and
+# the keys allowed to sign it. Without a pinned key it must not be written.
+MYCELIUM_HOME=$WORK/source-home
+mkdir -p "$MYCELIUM_HOME"
+RELEASE_VERSION=latest
+RELEASE_BASE=
+RELEASE_CHANNEL=stable
+RELEASE_KEYS=
+ENABLE_UPDATES=yes
+DRY_RUN=0
+write_release_source >/dev/null 2>&1
+[ ! -f "$MYCELIUM_HOME/release-source.json" ] || fail "an unpinned release wrote a source"
+ok "an unpinned release writes no update source"
+
+RELEASE_KEYS="aa11 bb22"
+write_release_source >/dev/null
+grep -q '"base": "https://github.com/fungOS-linux/mycelium/releases/latest/download"' \
+    "$MYCELIUM_HOME/release-source.json" || fail "the source base is wrong"
+grep -q '"channel": "stable"' "$MYCELIUM_HOME/release-source.json" \
+    || fail "the source channel is wrong"
+grep -q '"trusted_keys": \["aa11", "bb22"\]' "$MYCELIUM_HOME/release-source.json" \
+    || fail "the pinned keys are wrong"
+ok "a pinned release writes its base, channel and keys"
+
 printf 'all install default tests passed\n'
