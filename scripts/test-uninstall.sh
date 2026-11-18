@@ -119,4 +119,30 @@ grep -q 'refusing to remove' "$WORK/out.log" \
     || fail "an uninstall accepted the user's home as a state directory"
 ok "refuses to delete the user's home directory"
 
+# The canary install is a separate channel with its own home, prefix and label.
+seed
+mkdir -p "$HOME/.mycelium-canary/pki" "$HOME/.local/canary/bin"
+printf '#!/bin/sh\nexit 0\n' >"$HOME/.local/canary/bin/mycelium"
+printf 'canary binary\n' >"$HOME/.local/canary/bin/iroh-tun"
+printf '#!/bin/sh\nexit 0\n' >"$HOME/.local/bin/mycelium-canary"
+printf '<plist/>\n' >"$HOME/Library/LaunchAgents/dev.fpl.mycelium-canary.plist"
+: >"$LOG"
+run_uninstall --channel canary
+[ ! -f "$HOME/Library/LaunchAgents/dev.fpl.mycelium-canary.plist" ] || fail "the canary launch agent survived --channel canary"
+[ ! -f "$HOME/.local/canary/bin/mycelium" ] || fail "the canary binary survived"
+[ ! -f "$HOME/.local/bin/mycelium-canary" ] || fail "the canary launcher survived"
+[ -d "$HOME/.mycelium-canary" ] || fail "a canary uninstall removed state without --purge"
+[ -f "$HOME/Library/LaunchAgents/dev.fpl.mycelium.plist" ] || fail "removing canary also removed the stable launch agent"
+[ -f "$BIN/mycelium" ] || fail "removing canary also removed the stable binary"
+ok "--channel canary removes only the canary install"
+
+# And --purge on that channel removes its own state, not the stable one.
+seed
+mkdir -p "$HOME/.mycelium-canary/pki"
+printf 'canary key\n' >"$HOME/.mycelium-canary/pki/node-key.pem"
+run_uninstall --channel canary --purge
+[ ! -d "$HOME/.mycelium-canary" ] || fail "--channel canary --purge kept canary state"
+[ -d "$MYCELIUM_HOME" ] || fail "purging canary removed the stable state"
+ok "--channel canary --purge removes only canary state"
+
 printf 'all uninstall tests passed\n'

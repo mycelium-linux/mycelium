@@ -35,6 +35,10 @@ ROOT_OK=0
 # the install that claimed the machine. A custom --home is a sandbox or a
 # channel, and must not remove the machine's ingress.
 SYSTEM_WIRING=1
+CHANNEL=stable
+CHANNEL_SUFFIX=
+HOME_DECLARED=0
+PREFIX_DECLARED=0
 SUDO=sudo
 
 usage() {
@@ -52,6 +56,8 @@ Options:
   --keep-binaries  remove services and shell integration, keep the binaries
   --home DIR       state directory to remove (default ~/.mycelium)
   --prefix DIR     user prefix whose bin/ holds the binaries (default ~/.local)
+  --channel NAME   stable (default) or canary; picks that channel's home,
+                   prefix and service labels
   -h, --help       this text
 USAGE
 }
@@ -64,8 +70,32 @@ parse_args() {
             --purge) PURGE=1; shift ;;
             --no-backup) NO_BACKUP=1; shift ;;
             --keep-binaries) KEEP_BINARIES=1; shift ;;
-            --home) MYCELIUM_HOME=$2; BIN_DIR=$MYCELIUM_HOME/bin; SYSTEM_WIRING=0; shift 2 ;;
-            --prefix) PREFIX=$2; LOCAL_BIN=$PREFIX/bin; shift 2 ;;
+            --home) MYCELIUM_HOME=$2; BIN_DIR=$MYCELIUM_HOME/bin; SYSTEM_WIRING=0; HOME_DECLARED=1; shift 2 ;;
+            --prefix) PREFIX=$2; LOCAL_BIN=$PREFIX/bin; PREFIX_DECLARED=1; shift 2 ;;
+            --channel)
+                CHANNEL=$2
+                case "$CHANNEL" in
+                    stable) CHANNEL_SUFFIX= ;;
+                    canary)
+                        CHANNEL_SUFFIX=-canary
+                        # A canary install owns its state and binaries and never
+                        # the machine's system wiring. The channel flag is
+                        # stronger than an inherited MYCELIUM_HOME/MYCELIUM_PREFIX:
+                        # an explicit --home/--prefix is stronger still.
+                        if [ "$HOME_DECLARED" = 0 ]; then
+                            MYCELIUM_HOME=$HOME/.mycelium-canary
+                            BIN_DIR=$MYCELIUM_HOME/bin
+                        fi
+                        if [ "$PREFIX_DECLARED" = 0 ]; then
+                            PREFIX=$HOME/.local/canary
+                            LOCAL_BIN=$PREFIX/bin
+                        fi
+                        SYSTEM_WIRING=0
+                        ;;
+                    *) die "--channel must be stable or canary, not $CHANNEL" ;;
+                esac
+                shift 2
+                ;;
             -h|--help) usage; exit 0 ;;
             *) die "unknown option: $1 (try --help)" ;;
         esac
@@ -150,36 +180,36 @@ sweep_user_services() {
     # install. Keeping the whole list here is the point: a label that is added
     # elsewhere and not here becomes an orphan that survives uninstall.
     for label in \
-        dev.fpl.mycelium \
-        dev.fpl.mycelium-frontdoor \
-        dev.fpl.mycelium-ingress-https \
-        dev.fpl.mycelium-ingress-http \
-        dev.fpl.mycelium-updater \
-        dev.fpl.mycelium-dns \
-        dev.fpl.mycelium-dns-client \
-        dev.fpl.mycelium-doh \
-        dev.fpl.geoded \
-        dev.fungos.vfs-fuse \
-        dev.fungos.vfs-content \
-        dev.fungos.soil-home \
-        dev.fungos.soil-store \
-        dev.fpl.mycelium-gateway \
-        dev.fpl.mycelium-https; do
+        dev.fpl.mycelium$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-frontdoor$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-ingress-https$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-ingress-http$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-updater$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-dns$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-dns-client$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-doh$CHANNEL_SUFFIX \
+        dev.fpl.geoded$CHANNEL_SUFFIX \
+        dev.fungos.vfs-fuse$CHANNEL_SUFFIX \
+        dev.fungos.vfs-content$CHANNEL_SUFFIX \
+        dev.fungos.soil-home$CHANNEL_SUFFIX \
+        dev.fungos.soil-store$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-gateway$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-https$CHANNEL_SUFFIX; do
         remove_launch_agent "$label"
     done
     for unit in \
-        mycelium \
-        mycelium-frontdoor \
-        mycelium-ingress-https \
-        mycelium-ingress-http \
-        mycelium-update \
-        mycelium-dns \
-        mycelium-updater \
-        geoded \
-        fungos-vfs-fuse \
-        fungos-vfs-content \
-        fungos-soil-home \
-        fungos-soil-store; do
+        mycelium$CHANNEL_SUFFIX \
+        mycelium-frontdoor$CHANNEL_SUFFIX \
+        mycelium-ingress-https$CHANNEL_SUFFIX \
+        mycelium-ingress-http$CHANNEL_SUFFIX \
+        mycelium-update$CHANNEL_SUFFIX \
+        mycelium-dns$CHANNEL_SUFFIX \
+        mycelium-updater$CHANNEL_SUFFIX \
+        geoded$CHANNEL_SUFFIX \
+        fungos-vfs-fuse$CHANNEL_SUFFIX \
+        fungos-vfs-content$CHANNEL_SUFFIX \
+        fungos-soil-home$CHANNEL_SUFFIX \
+        fungos-soil-store$CHANNEL_SUFFIX; do
         remove_user_unit "$unit"
     done
     if [ "$DRY_RUN" != 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -257,8 +287,8 @@ remove_binaries() {
     for dir in "$LOCAL_BIN" "$BIN_DIR"; do
         [ -d "$dir" ] || continue
         for name in mycelium myceliumd mycelium-frontdoor mycelium-ingress mycelium-dns-resolver \
-            geoded iroh-tun soil fpl-bob fungos-vfs fungos-vfs-provider fungos-vfs-fetch \
-            fungos-vfs-fuse terminal-host; do
+            mycelium-canary geoded iroh-tun soil fpl-bob fungos-vfs fungos-vfs-provider \
+            fungos-vfs-fetch fungos-vfs-fuse terminal-host; do
             [ -e "$dir/$name" ] || continue
             act "remove $dir/$name" rm -f "$dir/$name"
         done
@@ -269,6 +299,10 @@ remove_binaries() {
             act "remove $backup" rm -f "$backup"
         done
     done
+    # The canary launcher is written into the login PATH, outside the canary
+    # prefix, so it is named explicitly rather than swept.
+    launcher="$HOME/.local/bin/mycelium-canary"
+    [ -e "$launcher" ] && act "remove $launcher" rm -f "$launcher" || true
 }
 
 # A path is only removable when it is one of the directories this product

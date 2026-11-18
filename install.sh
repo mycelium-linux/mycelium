@@ -25,7 +25,9 @@ set -Eeuo pipefail
 SCRIPT_PATH=${BASH_SOURCE[0]:-}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)
 TS=$(date +%Y%m%dT%H%M%S)
+MYCELIUM_PREFIX_SET=${MYCELIUM_PREFIX:+1}
 PREFIX=${MYCELIUM_PREFIX:-$HOME/.local}
+MYCELIUM_HOME_SET=${MYCELIUM_HOME:+1}
 MYCELIUM_HOME=${MYCELIUM_HOME:-$HOME/.mycelium}
 BIN_DIR=$MYCELIUM_HOME/bin
 LOCAL_BIN=$PREFIX/bin
@@ -35,6 +37,12 @@ SITE=${MYCELIUM_SITE:-}
 ROOT_LIBEXEC=${MYCELIUM_ROOT_LIBEXEC:-/usr/local/libexec/mycelium}
 
 MYCELIUM_REPO=${MYCELIUM_REPO:-https://github.com/fungOS-linux/mycelium.git}
+# Install channel. A canary install is a second, independent install on the same
+# machine: its own state, its own binaries, its own service label. The stable
+# install owns the machine's system-wide ingress (DNS, tunnel, frontdoor);
+# canary never does, so it cannot take those away from stable.
+CHANNEL=${MYCELIUM_CHANNEL:-stable}
+CHANNEL_SUFFIX=
 RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-fungOS-linux/mycelium}
 RELEASE_VERSION=
 RELEASE_BASE=
@@ -1671,6 +1679,123 @@ apply_release_defaults() {
 
 # A profile picks the components this machine should have. Explicit flags always
 # win; the profile only fills what the command line did not decide.
+#
+# The channel decides the state directory, the binary directory and the service
+# label before anything else is computed from them. `stable` keeps the historic
+# paths so an existing install is untouched.
+apply_channel() {
+    case "$CHANNEL" in
+        stable) CHANNEL_SUFFIX= ;;
+        canary)
+            CHANNEL_SUFFIX=-canary
+            if [ -z "${MYCELIUM_HOME_SET:-}" ]; then
+                MYCELIUM_HOME=$HOME/.mycelium-canary
+            fi
+            if [ -z "${MYCELIUM_PREFIX_SET:-}" ]; then
+                PREFIX=$HOME/.local/canary
+            fi
+            ;;
+        *) die "--channel must be stable or canary, not $CHANNEL" ;;
+    esac
+    BIN_DIR=$MYCELIUM_HOME/bin
+    LOCAL_BIN=$PREFIX/bin
+    export MYCELIUM_CHANNEL=$CHANNEL
+    export MYCELIUM_HOME
+}
+
+# The canary channel is a second install, not a second owner of the machine.
+# Everything system-wide - the DNS resolver's root daemon and /etc/resolver, the
+# privileged frontdoor/ingress ports, the root tunnel - belongs to the stable
+# install, so a canary run leaves those components off unless they are named
+# explicitly on the command line.
+apply_channel_defaults() {
+    [ "$CHANNEL" = canary ] || return 0
+    for name in VPN VFS SOIL BOB OPERATOR FRONTDOOR GEODE; do
+        case " $DECLARED " in
+            *" $name "*) ;;
+            *) eval "$name=no" ;;
+        esac
+    done
+    [ "$ENROLL" = ask ] && ENROLL=no
+    note "canary install: daemon and CLI only; system DNS, frontdoor and tunnel stay with stable"
+}
+
+# Write the canary launcher: the same binary with the canary state and channel,
+# reachable as `mycelium-canary` from the login PATH.
+install_canary_launcher() {
+    wrapper="$HOME/.local/bin/mycelium-canary"
+    if [ "$DRY_RUN" = 1 ]; then
+        note "would write $wrapper"
+        return 0
+    fi
+    mkdir -p "$(dirname "$wrapper")"
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf '%s\n' '# Mycelium canary channel: same binary, separate state and services.'
+        printf 'export MYCELIUM_HOME="${MYCELIUM_HOME:-%s}"\n' "$MYCELIUM_HOME"
+        printf '%s\n' 'export MYCELIUM_CHANNEL=canary'
+        printf 'exec %s "$@"\n' "$BIN_DIR/mycelium"
+    } >"$wrapper"
+    chmod 755 "$wrapper"
+    note "installed $wrapper"
+}
+
+# The canary daemon as a user service. The CLI's own `setup --repair` writes the
+# stable label and the stable home, so a canary install writes this one itself;
+# it is the only place the two channels define a service independently.
+install_canary_service() {
+    label="dev.fpl.mycelium$CHANNEL_SUFFIX"
+    unit="mycelium$CHANNEL_SUFFIX"
+    program="$BIN_DIR/mycelium"
+    log="$MYCELIUM_HOME/daemon.log"
+    if [ "$DRY_RUN" = 1 ]; then
+        note "would install the $CHANNEL daemon service ($label)"
+        return 0
+    fi
+    if [ "$(uname -s)" = Darwin ]; then
+        plist="$HOME/Library/LaunchAgents/$label.plist"
+        mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
+        {
+            printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+            printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+            printf '%s\n' '<plist version="1.0"><dict>'
+            printf '<key>Label</key><string>%s</string>\n' "$(xml_escape "$label")"
+            printf '%s\n' '<key>ProgramArguments</key><array>'
+            printf '<string>%s</string><string>_serve</string>\n' "$(xml_escape "$program")"
+            printf '%s\n' '</array>'
+            printf '%s\n' '<key>EnvironmentVariables</key><dict>'
+            printf '<key>MYCELIUM_HOME</key><string>%s</string>\n' "$(xml_escape "$MYCELIUM_HOME")"
+            printf '%s\n' '<key>MYCELIUM_CHANNEL</key><string>canary</string>'
+            printf '%s\n' '</dict>'
+            printf '%s\n' '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>'
+            printf '<key>ThrottleInterval</key><integer>10</integer>\n'
+            printf '<key>StandardOutPath</key><string>%s</string>\n' "$(xml_escape "$log")"
+            printf '<key>StandardErrorPath</key><string>%s</string>\n' "$(xml_escape "$log")"
+            printf '%s\n' '</dict></plist>'
+        } >"$plist"
+        launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+        if [ "$START" = 1 ]; then
+            launchctl bootstrap "gui/$(id -u)" "$plist" || warn "could not start $label"
+        fi
+        note "installed $plist"
+        return 0
+    fi
+    unit_path="$HOME/.config/systemd/user/$unit.service"
+    mkdir -p "$(dirname "$unit_path")"
+    {
+        printf '[Unit]\nDescription=Mycelium canary daemon\nAfter=default.target\n\n'
+        printf '[Service]\nEnvironment=MYCELIUM_HOME=%s\nEnvironment=MYCELIUM_CHANNEL=canary\n' "$MYCELIUM_HOME"
+        printf 'ExecStart=%s _serve\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n' "$program"
+    } >"$unit_path"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload || true
+        if [ "$START" = 1 ]; then
+            systemctl --user enable --now "$unit.service" || warn "could not start $unit"
+        fi
+    fi
+    note "installed $unit_path"
+}
+
 apply_profile() {
     case "$VFS_ROLE" in
         full|cache) ;;
@@ -1755,6 +1880,7 @@ parse_args() {
             --release) [ $# -ge 2 ] || die "--release needs a tag"; RELEASE_VERSION=$2; shift 2 ;;
             --release-base) [ $# -ge 2 ] || die "--release-base needs a URL"; RELEASE_BASE=$2; shift 2 ;;
             --prefix) [ $# -ge 2 ] || die "--prefix needs a directory"; PREFIX=$2; LOCAL_BIN=$PREFIX/bin; shift 2 ;;
+            --channel) [ $# -ge 2 ] || die "--channel needs stable or canary"; CHANNEL=$2; shift 2 ;;
             --overlay) [ $# -ge 2 ] || die "--overlay needs a CIDR"; OVERLAY=$2; shift 2 ;;
             --tun) [ $# -ge 2 ] || die "--tun needs an interface"; TUN=$2; shift 2 ;;
             --status) [ $# -ge 2 ] || die "--status needs a path"; STATUS_PATH=$2; shift 2 ;;
@@ -1878,6 +2004,7 @@ resume_updater() {
 
 main() {
     parse_args "$@"
+    apply_channel
     # A piped installer has no checkout to build from, and a member should not
     # have to install Rust to join. So the published release is the default when
     # this script is not running out of a source tree; a checkout keeps the
@@ -1890,6 +2017,7 @@ main() {
     resolve_updates_default
     apply_profile
     apply_release_defaults
+    apply_channel_defaults
     if [ -n "$RELEASE_VERSION" ]; then
         [ -z "$BIN_SRC" ] || die "--release and --bin-dir are mutually exclusive"
         [ -z "$SRC" ] || die "--release and --source are mutually exclusive"
@@ -1935,6 +2063,21 @@ main() {
     choose GEODE no "Install the optional geode credential broker?"
     if [ "$ENROLL" = ask ]; then
         if ask_yes "Enroll or repair this node's fleet membership?" yes; then ENROLL=yes; else ENROLL=no; fi
+    fi
+    if [ "$CHANNEL" = canary ]; then
+        # The updater is a stable-install service: its agent path carries no
+        # MYCELIUM_HOME, so a canary install that enabled it would replace the
+        # stable binary. A canary install is updated by running the installer
+        # again, which is the point of a dev channel.
+        if [ "$ENABLE_UPDATES" = yes ]; then
+            note "canary installs are updated by reinstalling; automatic updates stay off"
+        fi
+        install_mycelium
+        install_canary_launcher
+        run_component canary install_canary_service
+        say "Canary install complete"
+        note "run it as: mycelium-canary doctor"
+        return 0
     fi
     pause_updater
     if [ "$ENABLE_UPDATES" = yes ]; then trap resume_updater EXIT; fi
