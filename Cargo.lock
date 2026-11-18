@@ -2890,6 +2890,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mycelium-service-lease"
+version = "0.1.0"
+dependencies = [
+ "fpl-resource-observation",
+ "mycelium-dns-policy",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "mycelium-ssdp"
 version = "0.1.3"
 dependencies = [
