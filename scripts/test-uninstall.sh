@@ -88,7 +88,9 @@ run_uninstall --purge
 archive=$(ls "$HOME"/mycelium-uninstall-*.tar.gz 2>/dev/null | head -1)
 [ -n "$archive" ] || fail "--purge did not archive the state"
 tar -tzf "$archive" | grep -q 'pki/node-key.pem' || fail "the archive does not hold the node key"
-mode=$(stat -f '%Lp' "$archive" 2>/dev/null || stat -c '%a' "$archive")
+# GNU stat reads -c, BSD stat reads -f; the other one may succeed with a
+# filesystem report, so try the platform's own spelling first.
+mode=$(stat -c '%a' "$archive" 2>/dev/null || stat -f '%Lp' "$archive")
 [ "$mode" = 600 ] || [ "$mode" = 0600 ] || fail "the archive is not private (mode $mode)"
 ok "--purge archives the keys privately, then removes state"
 
