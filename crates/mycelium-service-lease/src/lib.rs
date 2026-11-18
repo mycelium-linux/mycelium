@@ -166,8 +166,10 @@ impl Lease {
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
         held.insert(capability.into());
-        self.attributes
-            .insert(CAPABILITIES.into(), held.into_iter().collect::<Vec<_>>().join(" "));
+        self.attributes.insert(
+            CAPABILITIES.into(),
+            held.into_iter().collect::<Vec<_>>().join(" "),
+        );
         self
     }
 
@@ -549,16 +551,12 @@ mod tests {
         assert_eq!(catalog.observations[0].value.names, ["unibus"]);
 
         // A label is not a name: a dot would escape the zone's composition.
-        assert!(
-            Publisher::new(home.path(), "node-b")
-                .publish(&lease().label("unibus.pris.fpl"))
-                .is_err()
-        );
-        assert!(
-            Publisher::new(home.path(), "node-b")
-                .publish(&lease().label("Unibus"))
-                .is_err()
-        );
+        assert!(Publisher::new(home.path(), "node-b")
+            .publish(&lease().label("unibus.pris.fpl"))
+            .is_err());
+        assert!(Publisher::new(home.path(), "node-b")
+            .publish(&lease().label("Unibus"))
+            .is_err());
     }
 
     #[test]
@@ -580,8 +578,14 @@ mod tests {
             lease.attributes().get(CAPABILITIES).map(String::as_str),
             Some("soil:metrics soil:unibus")
         );
-        assert_eq!(lease.attributes().get("metrics").map(String::as_str), Some("prometheus"));
-        assert_eq!(lease.attributes().get("healthz").map(String::as_str), Some("/healthz"));
+        assert_eq!(
+            lease.attributes().get("metrics").map(String::as_str),
+            Some("prometheus")
+        );
+        assert_eq!(
+            lease.attributes().get("healthz").map(String::as_str),
+            Some("/healthz")
+        );
     }
 
     #[test]
@@ -608,7 +612,10 @@ mod tests {
         let seen = observe(&path).unwrap();
         let names = seen.iter().map(|one| one.name.clone()).collect::<Vec<_>>();
         assert_eq!(names, ["geode.batty.fpl.myc", "unibus.pris.fpl.myc"]);
-        let scrapeable = seen.iter().filter(|one| one.holds("soil:metrics")).collect::<Vec<_>>();
+        let scrapeable = seen
+            .iter()
+            .filter(|one| one.holds("soil:metrics"))
+            .collect::<Vec<_>>();
         assert_eq!(scrapeable.len(), 1);
         assert_eq!(scrapeable[0].healthz(), Some("/healthz"));
         assert_eq!(scrapeable[0].readyz(), None);

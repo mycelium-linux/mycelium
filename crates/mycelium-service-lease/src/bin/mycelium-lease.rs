@@ -39,8 +39,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
     match command.as_str() {
         "publish" => {
-            let every = renewal_interval(options.every, options.ttl)
-                .map_err(|error| error.to_string())?;
+            let every =
+                renewal_interval(options.every, options.ttl).map_err(|error| error.to_string())?;
             let lease = options.lease()?;
             loop {
                 publisher
@@ -67,7 +67,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             println!(
                 "{} {kind} from {}",
-                if removed { "withdrew" } else { "nothing to withdraw for" },
+                if removed {
+                    "withdrew"
+                } else {
+                    "nothing to withdraw for"
+                },
                 publisher.path().display()
             );
             Ok(())
@@ -225,9 +229,11 @@ impl Options {
                 // Listing is an observation, not an assertion: it needs no
                 // identity of its own to read what the catalog already says.
             } else {
-                return Err("--node-id is the identity myceliumd already knows this node by; \
+                return Err(
+                    "--node-id is the identity myceliumd already knows this node by; \
                      it is the only thing a lease cannot guess"
-                    .into());
+                        .into(),
+                );
             }
         }
         Ok(options)
