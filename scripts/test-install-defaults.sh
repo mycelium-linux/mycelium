@@ -178,7 +178,7 @@ ok "an unpinned release writes no update source"
 
 RELEASE_KEYS="aa11 bb22"
 write_release_source >/dev/null
-grep -q '"base": "https://github.com/fungOS-linux/mycelium/releases/latest/download"' \
+grep -q '"base": "https://github.com/mycelium-linux/mycelium/releases/latest/download"' \
     "$MYCELIUM_HOME/release-source.json" || fail "the source base is wrong"
 grep -q '"channel": "stable"' "$MYCELIUM_HOME/release-source.json" \
     || fail "the source channel is wrong"

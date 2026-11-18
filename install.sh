@@ -36,14 +36,14 @@ SUFFIX=${MYCELIUM_DNS_SUFFIX:-myc}
 SITE=${MYCELIUM_SITE:-}
 ROOT_LIBEXEC=${MYCELIUM_ROOT_LIBEXEC:-/usr/local/libexec/mycelium}
 
-MYCELIUM_REPO=${MYCELIUM_REPO:-https://github.com/fungOS-linux/mycelium.git}
+MYCELIUM_REPO=${MYCELIUM_REPO:-https://github.com/mycelium-linux/mycelium.git}
 # Install channel. A canary install is a second, independent install on the same
 # machine: its own state, its own binaries, its own service label. The stable
 # install owns the machine's system-wide ingress (DNS, tunnel, frontdoor);
 # canary never does, so it cannot take those away from stable.
 CHANNEL=${MYCELIUM_CHANNEL:-stable}
 CHANNEL_SUFFIX=
-RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-fungOS-linux/mycelium}
+RELEASE_REPO=${MYCELIUM_RELEASE_REPO:-mycelium-linux/mycelium}
 RELEASE_VERSION=
 RELEASE_BASE=
 RELEASE_DIR=
