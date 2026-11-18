@@ -83,9 +83,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 if [ -z "$ARCHIVE" ]; then
     case "$RELEASE" in
-        latest) base=${RELEASE_BASE:-https://github.com/fungOS-linux/mycelium/releases/latest/download} ;;
-        v*) base=${RELEASE_BASE:-https://github.com/fungOS-linux/mycelium/releases/download/$RELEASE} ;;
-        *) base=${RELEASE_BASE:-https://github.com/fungOS-linux/mycelium/releases/download/v$RELEASE} ;;
+        latest) base=${RELEASE_BASE:-https://github.com/mycelium-linux/mycelium/releases/latest/download} ;;
+        v*) base=${RELEASE_BASE:-https://github.com/mycelium-linux/mycelium/releases/download/$RELEASE} ;;
+        *) base=${RELEASE_BASE:-https://github.com/mycelium-linux/mycelium/releases/download/v$RELEASE} ;;
     esac
     base=${base%/}
     ARCHIVE=$WORK/mycelium-$TARGET.tar.gz
