@@ -114,4 +114,52 @@ apply_release_defaults >/dev/null
 [ "$SOIL" = yes ] || fail "a source install dropped Soil"
 ok "a source install keeps the component defaults"
 
+# Channels: a canary install is a second install with its own state, binaries
+# and label, and it never takes the machine's system components from stable.
+CHANNEL=stable
+apply_channel
+[ "$MYCELIUM_HOME" = "$HOME/.mycelium" ] || fail "stable changed the state directory"
+[ "$PREFIX" = "$HOME/.local" ] || fail "stable changed the prefix"
+[ "$CHANNEL_SUFFIX" = "" ] || fail "stable grew a label suffix"
+ok "the stable channel keeps the historic paths"
+
+CHANNEL=canary
+apply_channel
+[ "$MYCELIUM_HOME" = "$HOME/.mycelium-canary" ] || fail "canary did not get its own state"
+[ "$PREFIX" = "$HOME/.local/canary" ] || fail "canary did not get its own prefix"
+[ "$LOCAL_BIN" = "$PREFIX/bin" ] || fail "canary LOCAL_BIN was not recomputed"
+[ "$BIN_DIR" = "$MYCELIUM_HOME/bin" ] || fail "canary BIN_DIR was not recomputed"
+[ "$CHANNEL_SUFFIX" = "-canary" ] || fail "canary label suffix missing"
+[ "$MYCELIUM_CHANNEL" = canary ] || fail "canary did not export MYCELIUM_CHANNEL"
+ok "the canary channel gets its own state, binaries and label"
+
+if (CHANNEL=beta; apply_channel) >/dev/null 2>&1; then
+    fail "an unknown channel was accepted"
+fi
+ok "an unknown channel is refused"
+
+VPN=ask
+VFS=ask
+SOIL=ask
+BOB=ask
+OPERATOR=ask
+FRONTDOOR=ask
+GEODE=ask
+ENROLL=ask
+DECLARED=
+CHANNEL=canary
+apply_channel_defaults >/dev/null
+for name in VPN VFS SOIL BOB OPERATOR FRONTDOOR GEODE; do
+    eval "value=\${$name}"
+    [ "$value" = no ] || fail "canary left $name on"
+done
+[ "$ENROLL" = no ] || fail "canary left enrollment on"
+ok "canary leaves the system-wide components off"
+
+VPN=yes
+DECLARED=" VPN "
+apply_channel_defaults >/dev/null
+[ "$VPN" = yes ] || fail "an explicit --vpn was dropped on canary"
+ok "an explicit flag still wins on canary"
+
 printf 'all install default tests passed\n'
