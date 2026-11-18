@@ -1,12 +1,17 @@
 # One-command workstation install
 
-`install.sh` is the single entry point for a Mycelium workstation. It builds or
-installs the core binaries, enrolls the node, and then asks which optional
-components to install:
+`install.sh` is the single entry point for a Mycelium workstation. It installs
+from a published release by default, enrolls the node, and then asks which
+optional components to install:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mycelium-linux/mycelium/master/install.sh | bash
 ```
+
+A piped installer has no source tree to build from, so it downloads the newest
+published release; a checkout keeps the source build, and `--release`, `--source`
+and `--bin-dir` always pick explicitly. Only the source and `--bin-dir` paths
+need a Rust toolchain.
 
 Use `--yes` for the recommended defaults, or answer the component prompts. The
 prompts run in this order: IPv6 VPN (then sudo), VFS, Soil + `fungOS.app`, build
@@ -14,11 +19,26 @@ offload, operator surface, optional geode broker, enrollment. Every prompt can b
 answered up front with the flags below. With no terminal, pass `--yes` or every
 component flag; the installer stops rather than silently assuming defaults. The
 exception is a join code: a piped installer with `--code`/`--claim` uses the
-same defaults, so a one-line join needs no other flags. A
-source build is the default until these installer and `iroh-tun` supervisor
-changes are in a signed release. The installer disables automatic updates for a local build by default
-(the signed channel can otherwise replace it with an older release); pass
-`--enable-updates` to keep them enabled.
+same defaults, so a one-line join needs no other flags.
+
+## Automatic updates
+
+A release install enables automatic updates on the channel the release was
+published on (read from `release-metadata.json`), so a member's host keeps
+moving to newer signed releases without anyone running the installer again. A
+source or `--bin-dir` build leaves them off: it has no release to update to,
+and the signed channel may be older than the build it replaced. `--enable-updates`
+and `--no-enable-updates` override either default.
+
+## What a release install does and does not build
+
+The release archive carries `mycelium`, `myceliumd`, `mycelium-frontdoor`,
+`mycelium-ingress`, `mycelium-dns-resolver`, `geoded` and `iroh-tun`.
+`fungos-vfs`, Soil and `fpl-bob` are built from their own repositories, so a
+release install defaults them **off** instead of reaching for a compiler; an
+explicit `--vfs`, `--soil` or `--bob` still builds them, which needs Rust.
+Until those components ship in the release, a member machine gets the overlay,
+the DNS resolver, the frontdoor, and `geode` from one command.
 
 ## Platform support
 
@@ -40,11 +60,11 @@ if they must start before a login session exists.
 
 | Component | What it does |
 |---|---|
-| Core (always) | Builds `mycelium`, `myceliumd`, the frontdoor, the DNS resolver and `geoded`; installs them under `~/.mycelium/bin` and `~/.local/bin`; enrolls or repairs the node. |
+| Core (always) | Installs `mycelium`, `myceliumd`, the frontdoor, the DNS resolver and `geoded` from the release (or builds them), under `~/.mycelium/bin` and `~/.local/bin`; enrolls or repairs the node. |
 | Operator (default) | Installs the loopback HTTPS frontdoor, its socket-activated `:443` and `:80` ingress, and CA trust, plus agent skills and shell completion. |
-| VPN (default) | Builds `iroh-tun`, assigns an IPv6 overlay prefix, and installs a root-owned LaunchDaemon (macOS) or systemd unit (Linux). |
-| VFS (default) | Builds `fungos-vfs` and its provider/fetch/FUSE binaries, creates the content root and mount point, and installs user services when their prerequisites exist. |
-| Soil (default) | Builds the `soil` CLI, creates the fungOS data directories, installs `fungOS.app` on macOS when a bundle is supplied or present, and installs `soil-home`/`soil-store` as LaunchAgents or systemd user units when the runtime binaries are available. A failed CLI build is reported but does not block the app or runtime setup. |
+| VPN (default) | Installs `iroh-tun` from the release (or builds it), assigns an IPv6 overlay prefix, and installs a root-owned LaunchDaemon (macOS) or systemd unit (Linux). |
+| VFS (default for a source build) | Builds `fungos-vfs` and its provider/fetch/FUSE binaries, creates the content root and mount point, and installs user services when their prerequisites exist. Off in a release install until the release carries these binaries. |
+| Soil (default for a source build) | Builds the `soil` CLI, creates the fungOS data directories, installs `fungOS.app` on macOS when a bundle is supplied or present, and installs `soil-home`/`soil-store` as LaunchAgents or systemd user units when the runtime binaries are available. Off in a release install until the release carries these binaries. |
 | Geode (opt-in) | Installs the `geoded` broker and a user service with a private store under `~/.geode`. Re-run with `--geode` to upgrade it; omitting the flag leaves an existing service alone. |
 | Build offload (default) | Builds `fpl-bob`, writes the sccache client configuration, and records the optional sccache-dist scheduler and remote build hosts. |
 
@@ -145,14 +165,17 @@ sudo rm -rf /usr/local/libexec/mycelium /var/run/mycelium
 ## Useful invocations
 
 ```sh
-# Recommended defaults, no prompts
+# One line for a member: newest release, recommended components
+curl -fsSL https://raw.githubusercontent.com/mycelium-linux/mycelium/master/install.sh | bash -s -- --yes
+
+# Recommended defaults from a checkout (builds from source)
 ./install.sh --yes --source .
+
+# Install from a release without a checkout
+./install.sh --release latest --yes
 
 # Use prebuilt binaries instead of building
 ./install.sh --bin-dir target/release
-
-# Download a published release instead of building
-./install.sh --release latest
 
 # Core and DNS only, no enrollment
 ./install.sh --no-enroll --no-vpn --no-vfs --no-soil --no-bob --no-operator
@@ -160,7 +183,7 @@ sudo rm -rf /usr/local/libexec/mycelium /var/run/mycelium
 # Existing node: update binaries and restart the daemon, no enrollment
 ./install.sh --no-enroll --no-vpn
 
-# Keep the signed update channel enabled
+# Keep the signed update channel enabled for a local build
 ./install.sh --yes --enable-updates
 
 # Enable or upgrade the optional geode broker later
