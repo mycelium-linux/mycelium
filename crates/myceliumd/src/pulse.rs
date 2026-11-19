@@ -31,7 +31,17 @@ mod cron;
 
 pub use cron::{Problem, Schedule};
 
-const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+/// The timeout a pulse gets when it does not ask for one.
+///
+/// It was the only timeout there was, and 60 seconds is a fine ceiling for a
+/// notification and a bad one for an audit: a scan that reads every repository
+/// in two owners does not fit, so it gets killed with nothing to show. A
+/// schedule that needs longer now says so.
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// A pulse may ask for up to an hour. Longer than that is a service, not a
+/// schedule, and a command that runs for an hour on a tick is a command that
+/// blocks the ones behind it.
+const MAX_TIMEOUT_SECS: u64 = 3600;
 const TICK: Duration = Duration::from_secs(5);
 const OVERDUE_GRACE_MS: u64 = 5 * 60 * 1000;
 const MAX_COMMAND_BYTES: usize = 8192;
@@ -125,6 +135,13 @@ pub struct UserPulse {
     /// The last nominal fire, used to make restarts idempotent.
     #[serde(default)]
     pub last_fired_ms: u64,
+    /// How long this pulse's command may run before it is killed.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_timeout_secs() -> u64 {
+    DEFAULT_TIMEOUT_SECS
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -436,6 +453,12 @@ fn validate(pulse: &UserPulse) -> Result<(), String> {
     if pulse.command.trim().is_empty() {
         return Err("pulse command is empty".into());
     }
+    if pulse.timeout_secs == 0 || pulse.timeout_secs > MAX_TIMEOUT_SECS {
+        return Err(format!(
+            "pulse timeout must be 1 to {MAX_TIMEOUT_SECS} seconds, got {}",
+            pulse.timeout_secs
+        ));
+    }
     if pulse.command.len() > MAX_COMMAND_BYTES {
         return Err(format!(
             "pulse command is longer than {MAX_COMMAND_BYTES} bytes"
@@ -549,8 +572,9 @@ pub(crate) async fn run_system(mesh: Arc<Mesh>) {
 
 async fn run_user_pulse(pulse: UserPulse, scheduled_at_ms: u64) {
     let fired_at_ms = now_ms();
+    let timeout = Duration::from_secs(pulse.timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
     let result = tokio::time::timeout(
-        RUN_TIMEOUT,
+        timeout,
         tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&pulse.command)
@@ -580,7 +604,7 @@ async fn run_user_pulse(pulse: UserPulse, scheduled_at_ms: u64) {
         Ok(Err(error)) => ("failed".to_owned(), format!("spawn: {error}")),
         Err(_) => (
             "failed".to_owned(),
-            format!("timeout after {} seconds", RUN_TIMEOUT.as_secs()),
+            format!("timeout after {} seconds", timeout.as_secs()),
         ),
     };
     let finished_at_ms = now_ms();
@@ -651,8 +675,42 @@ fn default_true() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{jitter_ms, startup_offset, Startup, SystemAction, SYSTEM_PULSES};
+    use super::{
+        jitter_ms, startup_offset, Startup, SystemAction, UserPulse, DEFAULT_TIMEOUT_SECS,
+        MAX_TIMEOUT_SECS, SYSTEM_PULSES,
+    };
     use std::time::Duration;
+
+    fn user_pulse(timeout_secs: u64) -> UserPulse {
+        UserPulse {
+            id: "arborist.scan".into(),
+            schedule: "0 6 * * *".into(),
+            command: "true".into(),
+            enabled: true,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_fired_ms: 0,
+            timeout_secs,
+        }
+    }
+
+    #[test]
+    fn a_pulse_that_never_asked_for_a_timeout_keeps_the_old_one() {
+        // The stored schedules predate the field, so the default is not a
+        // courtesy: it is what every existing pulse runs with after an upgrade.
+        let stored: UserPulse =
+            serde_json::from_str(r#"{"id":"a","schedule":"0 6 * * *","command":"true"}"#)
+                .expect("an old schedule still parses");
+        assert_eq!(stored.timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert_eq!(super::validate(&stored), Ok(()));
+    }
+
+    #[test]
+    fn a_pulse_may_ask_for_longer_but_not_forever() {
+        assert_eq!(super::validate(&user_pulse(300)), Ok(()));
+        assert!(super::validate(&user_pulse(0)).is_err());
+        assert!(super::validate(&user_pulse(MAX_TIMEOUT_SECS + 1)).is_err());
+    }
 
     #[test]
     fn ssh_renewal_is_split_into_issuer_and_check() {

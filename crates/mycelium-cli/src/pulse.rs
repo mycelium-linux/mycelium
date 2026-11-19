@@ -29,6 +29,7 @@ pub async fn command(args: &[String]) -> Result<Vec<String>, ClientError> {
             let mut command = None;
             let mut id = String::new();
             let mut enabled = true;
+            let mut timeout_secs = None;
             let mut write = false;
             let mut index = 1;
             while index < args.len() {
@@ -37,6 +38,15 @@ pub async fn command(args: &[String]) -> Result<Vec<String>, ClientError> {
                     "--command" => command = Some(value(args, &mut index, "--command")?),
                     "--id" => id = value(args, &mut index, "--id")?,
                     "--disabled" => enabled = false,
+                    // A scan that reads a fleet does not fit in a minute. Asked
+                    // for explicitly, because the default should stay the
+                    // ceiling that stops a runaway command.
+                    "--timeout" => {
+                        let raw = value(args, &mut index, "--timeout")?;
+                        timeout_secs = Some(raw.parse::<u64>().map_err(|_| {
+                            ClientError::Protocol(format!("--timeout expects seconds, got {raw:?}"))
+                        })?);
+                    }
                     "--write" => write = true,
                     other => {
                         return Err(ClientError::Protocol(format!(
@@ -61,6 +71,7 @@ pub async fn command(args: &[String]) -> Result<Vec<String>, ClientError> {
                 created_at_ms: 0,
                 updated_at_ms: 0,
                 last_fired_ms: 0,
+                timeout_secs: timeout_secs.unwrap_or(60),
             };
             let value = client
                 .call(&Request::PulsePut { pulse, write: true })
@@ -235,7 +246,8 @@ fn format_runs(runs: &[PulseRun]) -> Vec<String> {
 fn usage() -> Vec<String> {
     [
         "usage: mycelium pulse list [--json]",
-        "       mycelium pulse add --schedule CRON --command CMD [--id ID] [--disabled] --write",
+        "       mycelium pulse add --schedule CRON --command CMD [--id ID] [--disabled]
+                          [--timeout SECS] --write",
         "       mycelium pulse remove ID --write",
         "       mycelium pulse toggle ID --write",
         "       mycelium pulse runs [ID] [--limit N] [--json]",

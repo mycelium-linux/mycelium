@@ -136,7 +136,8 @@ usage:
   mycelium managed apply ID [--catalog DIR] [--allow-root] --write
   mycelium managed uninstall ID [--catalog DIR] [--allow-root] --write
   mycelium pulse list [--json]
-  mycelium pulse add --schedule CRON --command CMD [--id ID] [--disabled] --write
+  mycelium pulse add --schedule CRON --command CMD [--id ID] [--disabled]
+                        [--timeout SECS] --write
   mycelium pulse remove ID --write
   mycelium pulse toggle ID --write
   mycelium pulse runs [ID] [--limit N] [--json]
