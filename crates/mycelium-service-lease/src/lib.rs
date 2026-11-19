@@ -499,6 +499,15 @@ impl Publisher {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // A privileged writer (a root tunnel publishing its lease) must not
+        // change who owns the catalog: the readers are the user who owns the
+        // daemon, and a rename that flips ownership to root locks them out on
+        // every renewal.
+        #[cfg(unix)]
+        let owner = std::fs::metadata(&self.path).ok().map(|metadata| {
+            use std::os::unix::fs::MetadataExt as _;
+            (metadata.uid(), metadata.gid(), metadata.mode() & 0o777)
+        });
         let temporary = self.path.with_extension("json.tmp");
         let mut file = std::fs::File::create(&temporary)?;
         file.write_all(&body)?;
@@ -507,7 +516,15 @@ impl Publisher {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            match owner {
+                // Keep what the catalog already had.
+                Some((uid, gid, mode)) => {
+                    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+                    std::os::unix::fs::chown(&temporary, Some(uid), Some(gid))?;
+                }
+                // A fresh catalog is private until someone widens it.
+                None => file.set_permissions(std::fs::Permissions::from_mode(0o600))?,
+            }
         }
         drop(file);
         std::fs::rename(&temporary, &self.path)?;
@@ -773,5 +790,29 @@ mod tests {
         assert_eq!(observe(publisher.path()).unwrap().len(), 1);
         publisher.withdraw("unibus").unwrap();
         assert!(observe(publisher.path()).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn rewriting_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        let publisher = Publisher::new(home.path(), "node-a");
+        let lease = Lease::new("unibus").endpoint("tcp://100.70.187.127:18790");
+        publisher.publish(&lease).unwrap();
+        std::fs::set_permissions(publisher.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        // A renewal (and a root writer) must not quietly re-privatise the file:
+        // the readers are a different uid than the writer.
+        publisher.publish(&lease).unwrap();
+        let mode = std::fs::metadata(publisher.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644);
     }
 }
