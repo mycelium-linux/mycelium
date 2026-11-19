@@ -1,12 +1,11 @@
 //! DNS aliases from application-owned leases, never scanned listeners or ACLs.
 use super::Settings;
-use fpl_resource_observation::ServiceCatalog;
-use mycelium_dns_policy::service_names::project_service_records;
-use mycelium_dns_policy::settings::Policy;
+use fpl_resource_observation::{ServiceCatalog, SCHEMA_VERSION};
 use mycelium_dns_policy::{canonical_domain, DnsRecord};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
+    net::{IpAddr, SocketAddr},
 };
 
 /// Explicit local plugin files supply labels, never records or authority.
@@ -73,6 +72,21 @@ pub(super) fn validate_aliases(aliases: &BTreeMap<String, String>) -> Result<(),
     Ok(())
 }
 
+/// The address a lease's endpoint names, whatever the transport.
+///
+/// The scheme says how to talk to a service, not whether the service may have a
+/// name: a lease on `http://100.74.130.83:8790` names a service exactly as well
+/// as one on `https://`. Only a literal IP can become a DNS answer, so anything
+/// else is skipped rather than guessed at.
+fn address(endpoint: &str) -> Option<IpAddr> {
+    let (scheme, rest) = endpoint.split_once("://")?;
+    if !matches!(scheme, "http" | "https" | "tcp" | "quic") {
+        return None;
+    }
+    let socket: SocketAddr = rest.trim_end_matches('/').parse().ok()?;
+    (socket.port() != 0).then_some(socket.ip())
+}
+
 pub(super) fn project(
     settings: &Settings,
     mut records: Vec<DnsRecord>,
@@ -80,24 +94,80 @@ pub(super) fn project(
     now: u64,
     mut deadline: u64,
 ) -> Result<(Vec<DnsRecord>, u64), String> {
-    // The installed policy, in the same shape every other adapter reads,
-    // handed to the rule that owns naming. This adapter contributes no naming
-    // logic of its own: it renders the records the rule produced.
-    let policy = Policy {
-        service_aliases: aliases(settings)?,
-        service_index_peers: settings.service_index_peers.clone(),
-        reachable_prefixes: settings.reachable_prefixes.clone(),
-        mesh_sites: settings.mesh_sites,
-        additional_sites: settings.additional_sites.clone(),
-        expiry_seconds: settings.expiry_seconds,
-        delegations: settings.resolver.delegations.clone(),
-        suffix: settings.resolver.suffix.clone(),
-        site: settings.resolver.site.clone(),
-    };
-    let (services, expiry) = project_service_records(&policy, &records, catalog, now)?;
-    records.extend(services);
-    if let Some(expiry) = expiry {
-        deadline = deadline.min(expiry);
+    let aliases = aliases(settings)?;
+    if catalog.schema_version != SCHEMA_VERSION || catalog.observations.len() > 4096 {
+        return Err("unsupported or oversized service DNS catalog".into());
+    }
+    let hosts = records.clone();
+    let mut identities = BTreeSet::new();
+    let mut entrances = BTreeMap::new();
+    for service in &catalog.observations {
+        let Some(label) = aliases.get(&service.value.kind) else {
+            continue;
+        };
+        if service.schema_version != SCHEMA_VERSION
+            || !service.is_fresh_at(now)
+            || service.expires_at.saturating_sub(service.observed_at) > 300
+            || service.provenance.provider != "mycelium-application-owner-lease"
+            || service.value.attributes.get("node_id") != Some(&service.provenance.observer)
+        {
+            continue;
+        }
+        if !identities.insert(&service.service_id) {
+            return Err("duplicate service DNS identity".into());
+        }
+        for endpoint in &service.value.endpoints {
+            let Some(ip) = address(endpoint) else {
+                continue;
+            };
+            // An owner lease names its own node, so `kind.<node>` follows from
+            // the observation itself. Requiring a separate host record meant a
+            // correct lease produced no name at all.
+            let matched: Vec<DnsRecord> = hosts
+                .iter()
+                .filter(|r| r.node == service.provenance.observer && r.address == ip)
+                .cloned()
+                .collect();
+            let candidates = if matched.is_empty() {
+                match service.value.attributes.get("node_name") {
+                    Some(node_name) => {
+                        let mut parts = node_name.splitn(2, '.');
+                        vec![DnsRecord {
+                            name: node_name.clone(),
+                            address: ip,
+                            site: parts.next().unwrap_or_default().to_owned(),
+                            node: parts.next().unwrap_or_default().to_owned(),
+                        }]
+                    }
+                    None => Vec::new(),
+                }
+            } else {
+                matched
+            };
+            for host in candidates {
+                let name = canonical_domain(&format!("{label}.{}", host.name))?;
+                // One entrance per name/address: DNS cannot choose a port or URL.
+                if entrances
+                    .insert((name.clone(), ip), endpoint.clone())
+                    .is_some_and(|old| old != *endpoint)
+                {
+                    return Err("ambiguous service entrance; DNS cannot select ports".into());
+                }
+                records.push(DnsRecord {
+                    name,
+                    ..host.clone()
+                });
+                if settings.service_index_peers.get(&service.value.kind)
+                    == Some(&service.provenance.observer)
+                {
+                    records.push(DnsRecord {
+                        name: canonical_domain(&format!("{label}.{}", settings.resolver.suffix))?,
+                        ..host.clone()
+                    });
+                }
+                deadline = deadline.min(service.expires_at);
+            }
+        }
     }
     records.sort();
     records.dedup();
@@ -108,7 +178,6 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mycelium_dns_policy::service_names::entrance_address;
     use serde_json::json;
     struct PolicyFile(std::path::PathBuf);
     impl PolicyFile {
@@ -261,32 +330,6 @@ mod tests {
         assert_eq!(expiry, 1050);
         assert!(records.iter().any(|r| r.name == "unibus.neo.lab.myc"));
     }
-    /// The adapter adds no naming logic: a ULA host record yields a ULA answer
-    /// for the service name, exactly as the CLI preview does.
-    #[test]
-    fn an_overlay_host_record_gives_the_service_an_overlay_answer() {
-        let mut s = crate::tests::settings();
-        s.service_aliases
-            .insert("unibus-viewer".into(), "unibus".into());
-        let host = DnsRecord {
-            name: "neo.lab.myc".into(),
-            address: "fd7a:115c:a1e0::6".parse().unwrap(),
-            site: "lab".into(),
-            node: "neo".into(),
-        };
-        let mut services = catalog();
-        services.observations[0].value.endpoints =
-            BTreeSet::from(["https://[fd7a:115c:a1e0::6]:8444".into()]);
-        let (records, _) = project(&s, vec![host], &services, 1000, 1200).unwrap();
-        let projected = records
-            .iter()
-            .find(|record| record.name == "unibus.neo.lab.myc")
-            .expect("the service answers with its host record's name");
-        assert_eq!(
-            projected.address,
-            "fd7a:115c:a1e0::6".parse::<std::net::IpAddr>().unwrap()
-        );
-    }
     #[test]
     fn root_index_requires_explicit_owner_and_fresh_matching_lease() {
         let mut settings = crate::tests::settings();
@@ -356,7 +399,7 @@ mod tests {
             "https://192.0.2.12:8444/admin",
             "https://192.0.2.12:8444?token=x",
         ] {
-            assert!(entrance_address(url).is_none());
+            assert!(address(url).is_none());
         }
     }
 }
