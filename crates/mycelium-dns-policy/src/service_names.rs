@@ -508,3 +508,117 @@ mod tests {
         assert!(project_service_records(&naming(&[], &[]), &hosts, &catalog, 100).is_err());
     }
 }
+
+/// Pick the candidate a name resolves to right now.
+///
+/// Eligibility is a filter — the name is claimed, the lease is fresh, there is
+/// something to dial, and the caller says it is ready. Preference is a sort:
+/// same site first, then a stable tiebreak. They never mix, because a "slow"
+/// candidate that is not ready is not a candidate at all.
+///
+/// Probing is deliberately the caller's: this crate has no network and no clock
+/// of its own, so `ready` and `now` arrive from whoever is doing the routing.
+pub fn select<'a>(
+    claims: impl IntoIterator<Item = &'a ServiceClaim>,
+    name: &str,
+    site: Option<&str>,
+    ready: impl Fn(&ServiceClaim) -> bool,
+    now: u64,
+) -> Option<&'a ServiceClaim> {
+    let at_site = |claim: &ServiceClaim| match site {
+        Some(site) => {
+            claim.node.ends_with(&format!(".{site}")) || claim.node.contains(&format!(".{site}."))
+        }
+        None => false,
+    };
+    let mut eligible: Vec<&ServiceClaim> = claims
+        .into_iter()
+        .filter(|claim| claim.names.iter().any(|claimed| claimed == name))
+        .filter(|claim| !claim.endpoints.is_empty())
+        .filter(|claim| claim.expires_at > now)
+        .filter(|claim| ready(claim))
+        .collect();
+    eligible.sort_by(|left, right| {
+        at_site(right)
+            .cmp(&at_site(left))
+            // Deterministic, not random: two gateways must agree on the tie, or
+            // the same client bounces between replicas on every request.
+            .then_with(|| left.service_id.cmp(&right.service_id))
+    });
+    eligible.into_iter().next()
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn claim(id: &str, node: &str, expires_at: u64) -> ServiceClaim {
+        ServiceClaim {
+            service_id: id.into(),
+            kind: "confluence".into(),
+            names: vec!["confluence.myc".into()],
+            node: node.into(),
+            endpoints: BTreeSet::from(["https://100.74.130.83:8790".to_string()]),
+            expires_at,
+        }
+    }
+
+    fn pick<'a>(
+        claims: &'a [ServiceClaim],
+        site: Option<&str>,
+        now: u64,
+    ) -> Option<&'a ServiceClaim> {
+        select(claims, "confluence.myc", site, |_| true, now)
+    }
+
+    #[test]
+    fn a_stale_lease_loses_to_a_fresh_one() {
+        let claims = [
+            claim("b", "pris.fpl.myc", 10),
+            claim("a", "pris.fpl.myc", 100),
+        ];
+        assert_eq!(
+            pick(&claims, None, 50).map(|c| c.service_id.as_str()),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn a_replica_that_is_not_ready_is_not_a_candidate() {
+        let claims = [claim("only", "pris.fpl.myc", 100)];
+        assert!(select(&claims, "confluence.myc", None, |_| false, 50).is_none());
+    }
+
+    #[test]
+    fn the_local_site_wins_over_a_lexicographically_earlier_one() {
+        let claims = [
+            claim("aaa", "batty.lab.myc", 100),
+            claim("zzz", "pris.fpl.myc", 100),
+        ];
+        assert_eq!(
+            pick(&claims, Some("fpl"), 50).map(|c| c.service_id.as_str()),
+            Some("zzz")
+        );
+    }
+
+    #[test]
+    fn two_gateways_agree_on_the_tie() {
+        let forward = [
+            claim("a", "pris.fpl.myc", 100),
+            claim("b", "pris.fpl.myc", 100),
+        ];
+        let mut backward = forward.to_vec();
+        backward.reverse();
+        assert_eq!(
+            pick(&forward, None, 50).map(|c| c.service_id.clone()),
+            pick(&backward, None, 50).map(|c| c.service_id.clone())
+        );
+    }
+
+    #[test]
+    fn a_name_nobody_claims_resolves_to_nothing() {
+        let claims = [claim("a", "pris.fpl.myc", 100)];
+        assert!(select(&claims, "unibus.myc", None, |_| true, 50).is_none());
+    }
+}
