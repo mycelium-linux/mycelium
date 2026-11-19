@@ -392,8 +392,17 @@ mod tests {
             .endpoints
             .insert("https://192.0.2.12:9444".into());
         assert!(run(&c).is_err());
+        // The scheme is transport, not identity: a lease on http names a
+        // service exactly as well as one on https.
+        assert_eq!(
+            address("http://192.0.2.12:8444"),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12)))
+        );
+        assert_eq!(
+            address("tcp://192.0.2.12:8444"),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12)))
+        );
         for url in [
-            "http://192.0.2.12:8444",
             "https://user@192.0.2.12:8444",
             "https://neo.lab.myc:8444",
             "https://192.0.2.12:8444/admin",
