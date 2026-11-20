@@ -13,7 +13,8 @@ struct MyceliumMenuBarApp: App {
                 .environmentObject(model)
                 .onAppear { model.refresh() }
         } label: {
-            Image(systemName: model.menuBarSymbol)
+            Image(nsImage: model.menuBarImage)
+                .renderingMode(.template)
                 .accessibilityLabel("Mycelium")
         }
         .menuBarExtraStyle(.window)

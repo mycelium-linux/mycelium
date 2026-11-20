@@ -80,10 +80,18 @@ final class MyceliumModel: ObservableObject {
 
     deinit { poll?.cancel() }
 
-    var menuBarSymbol: String {
-        if !daemonRunning { return "network.slash" }
-        if tunnelRunning { return "network" }
-        return "network"
+    /// The Spore mark from `Resources/MenuBarIconTemplate*.png`. AppKit treats
+    /// a name ending in `Template` as a template image, so the menu bar recolors
+    /// it for light/dark and for the selected (inverted) state. A build that
+    /// lost its resources still gets a status-bearing SF Symbol.
+    var menuBarImage: NSImage {
+        if let image = NSImage(named: "MenuBarIconTemplate") {
+            image.isTemplate = true
+            return image
+        }
+        let symbol = !daemonRunning ? "network.slash" : "network"
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: "Mycelium")
+            ?? NSImage()
     }
 
     var statusColor: Color {

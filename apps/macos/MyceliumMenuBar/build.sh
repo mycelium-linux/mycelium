@@ -43,6 +43,7 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 install -m 755 "$BIN" "$BUNDLE/Contents/MacOS/Mycelium"
 install -m 644 "$PKG/Info.plist" "$BUNDLE/Contents/Info.plist"
+cp -R "$PKG/Resources/." "$BUNDLE/Contents/Resources/"
 # Ad-hoc is enough for a locally built menu bar app; a release sign/notarize is
 # the packaging job's business, not the developer's.
 codesign --force --deep --sign - "$BUNDLE" >/dev/null 2>&1 || true
