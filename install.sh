@@ -91,6 +91,7 @@ TUN=
 STATUS_PATH=
 APP_BUNDLE=
 APP_URL=
+MENUBAR_APP=
 SOIL_RUNTIME=
 SOIL_SOURCE=
 SPORES_SOURCE=
@@ -174,6 +175,7 @@ Component inputs:
   --status PATH          root-owned tunnel status file
   --app PATH             fungOS.app bundle to install
   --app-url URL          .zip containing fungOS.app
+  --menubar-app PATH     Mycelium.app menu bar bundle (apps/macos/MyceliumMenuBar/build.sh)
   --soil-runtime DIR     soil-home/soil-store/soil-spore/files-serve binaries
   --spores-src DIR       Spores checkout (contains spores/)
   --terminal-host PATH   prebuilt terminal-host binary (built from the Soil checkout if omitted)
@@ -1435,6 +1437,48 @@ install_soil() {
         else
             warn "fungOS.app not found; pass --app PATH or --app-url URL"
         fi
+
+        # The menu bar app is a separate bundle: it is per-user, needs no
+        # root, and is the status/toggle surface that opens the web UI for
+        # everything deeper.
+        menubar_src=$MENUBAR_APP
+        if [ -z "$menubar_src" ] || [ ! -d "$menubar_src/Contents" ]; then
+            for candidate in "$ROOT/dist/macos/Mycelium.app" "$HOME/Applications/Mycelium.app"; do
+                if [ -d "$candidate/Contents" ]; then menubar_src=$candidate; break; fi
+            done
+        fi
+        if [ -n "$menubar_src" ] && [ -d "$menubar_src/Contents" ]; then
+            menubar_dest=$HOME/Applications/Mycelium.app
+            mkdir_p "$HOME/Applications"
+            if [ "$menubar_src" != "$menubar_dest" ]; then
+                if [ -e "$menubar_dest" ]; then
+                    mv "$menubar_dest" "$menubar_dest.pre-$TS"
+                fi
+                cp -R "$menubar_src" "$menubar_dest"
+            fi
+            chmod 755 "$menubar_dest/Contents/MacOS/Mycelium" 2>/dev/null || true
+            xattr -dr com.apple.quarantine "$menubar_dest" 2>/dev/null || true
+            menubar_plist=$HOME/Library/LaunchAgents/dev.fpl.mycelium-menubar.plist
+            if [ "$DRY_RUN" = 1 ]; then
+                note "would write $menubar_plist"
+            else
+                mkdir -p "$HOME/Library/LaunchAgents"
+                cat >"$menubar_plist" <<MENUBAR
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>dev.fpl.mycelium-menubar</string>
+    <key>ProgramArguments</key><array><string>$menubar_dest/Contents/MacOS/Mycelium</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><false/>
+    <key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+MENUBAR
+                launchctl bootout "gui/$(id -u)/dev.fpl.mycelium-menubar" >/dev/null 2>&1 || true
+                launchctl bootstrap "gui/$(id -u)" "$menubar_plist" >/dev/null 2>&1 || true
+            fi
+            note "installed $menubar_dest (menu bar)"
+        fi
     elif [ -n "$APP_BUNDLE" ] || [ -n "$APP_URL" ]; then
         note "fungOS.app is a macOS bundle; skipping it on $(uname -s)"
     fi
@@ -1896,6 +1940,7 @@ parse_args() {
             --status) [ $# -ge 2 ] || die "--status needs a path"; STATUS_PATH=$2; shift 2 ;;
             --app) [ $# -ge 2 ] || die "--app needs a bundle path"; APP_BUNDLE=$2; shift 2 ;;
             --app-url) [ $# -ge 2 ] || die "--app-url needs a URL"; APP_URL=$2; shift 2 ;;
+            --menubar-app) [ $# -ge 2 ] || die "--menubar-app needs a bundle path"; MENUBAR_APP=$2; shift 2 ;;
             --soil-runtime) [ $# -ge 2 ] || die "--soil-runtime needs a directory"; SOIL_RUNTIME=$2; shift 2 ;;
             --spores-src) [ $# -ge 2 ] || die "--spores-src needs a directory"; SPORES_SOURCE=$2; shift 2 ;;
             --terminal-host) [ $# -ge 2 ] || die "--terminal-host needs a path"; TERMINAL_HOST_BIN=$2; shift 2 ;;

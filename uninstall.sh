@@ -188,6 +188,7 @@ sweep_user_services() {
         dev.fpl.mycelium-dns$CHANNEL_SUFFIX \
         dev.fpl.mycelium-dns-client$CHANNEL_SUFFIX \
         dev.fpl.mycelium-doh$CHANNEL_SUFFIX \
+        dev.fpl.mycelium-menubar$CHANNEL_SUFFIX \
         dev.fpl.geoded$CHANNEL_SUFFIX \
         dev.fungos.vfs-fuse$CHANNEL_SUFFIX \
         dev.fungos.vfs-content$CHANNEL_SUFFIX \
@@ -344,6 +345,9 @@ purge_state() {
     done
     if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Applications/fungOS.app" ]; then
         act "remove $HOME/Applications/fungOS.app" rm -rf "$HOME/Applications/fungOS.app"
+    fi
+    if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Applications/Mycelium.app" ]; then
+        act "remove $HOME/Applications/Mycelium.app" rm -rf "$HOME/Applications/Mycelium.app"
     fi
 }
 

@@ -56,6 +56,7 @@ the DNS resolver, the frontdoor, and `geode` from one command.
 | DNS suffix routing | `/etc/resolver/<suffix>` | systemd-resolved 258+ delegate; older hosts use a root stub and rewrite `/etc/resolv.conf` after backing it up |
 | VFS mount | macFUSE | `/dev/fuse` |
 | `fungOS.app` | Installed from an app bundle | macOS-only; skipped, while the Soil CLI/runtime still install |
+| `Mycelium.app` | Menu bar app; installed from `dist/macos` or `--menubar-app` | macOS-only; no menu bar surface on Linux |
 
 The Linux path assumes a systemd host. Without a user systemd session, VFS,
 Soil, and the user DNS listener still write their units, but startup can fail;
@@ -234,6 +235,10 @@ not write files, start services, or ask for sudo.
   The app is an ad-hoc-signed development build, so Gatekeeper may reject it
   even when the bundle is complete. Linux installs the Soil runtime without the
   app.
+- **Mycelium menu bar**: macOS only. Build `apps/macos/MyceliumMenuBar/build.sh`
+  and pass `--menubar-app dist/macos/Mycelium.app` to install it and its
+  login item; `docs/macos-menubar.md` describes the surface. Skipped silently
+  when no bundle is present.
 - **Geode**: optional. `--geode` creates `~/.geode`, starts `geoded` as a user
   service, and leaves the key/store in that directory. The installer does not
   remove an existing broker when the flag is omitted.
