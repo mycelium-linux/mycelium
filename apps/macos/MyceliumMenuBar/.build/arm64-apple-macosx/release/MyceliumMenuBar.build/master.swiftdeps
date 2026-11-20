@@ -1,10 +1,10 @@
 version: "Apple Swift version 6.0 (swiftlang-6.0.0.9.10 clang-1600.0.26.2)"
 options: "1523e3aa2127da4e6ef45e31ddad5f73fbe5d1be65453abe3f96da24db0e9b83"
-build_start_time: [1795151610, 777723000]
-build_end_time: [1795151613, 100525000]
+build_start_time: [1795152827, 636642000]
+build_end_time: [1795152830, 672922000]
 inputs:
-  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/CommandRunner.swift": [1795151378, 231190838]
-  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumMenuBarApp.swift": [1795151309, 987079030]
-  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumModel.swift": [1795151609, 971729279]
-  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/SporesWindow.swift": [1795151368, 305118097]
-  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/StatusPanel.swift": [1795151358, 268568241]
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/CommandRunner.swift": [1795152606, 767365065]
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumMenuBarApp.swift": [1795152826, 176910053]
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumModel.swift": [1795152826, 177329053]
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/SporesWindow.swift": [1795152606, 768333440]
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/StatusPanel.swift": [1795152606, 768684315]
