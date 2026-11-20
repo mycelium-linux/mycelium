@@ -1,4 +1,5 @@
 pub mod config;
+mod dashboard;
 mod discovery;
 pub mod route;
 pub mod server;

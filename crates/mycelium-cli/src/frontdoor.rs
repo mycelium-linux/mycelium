@@ -1898,6 +1898,9 @@ fn default_routes(home: &Path) -> Value {
     json!({
         "mycelium_bin": mycelium.display().to_string(),
         "service_refresh_secs": 15,
+        // The dashboard is served by the frontdoor itself; `home.myc` is not a
+        // discovered service and there is no soil-home launcher behind it.
+        "dashboard": {"hosts": ["home.myc"]},
         "routes": [
             ai_route,
             {
@@ -1905,12 +1908,6 @@ fn default_routes(home: &Path) -> Value {
                 "hosts": ["mcp.myc"],
                 "upstream": "http://127.0.0.1:8000",
                 "service_kind": "mcp",
-                "priority": 10
-            },
-            {
-                "name": "home",
-                "hosts": ["home.myc"],
-                "service_kind": "home",
                 "priority": 10
             },
             {
@@ -2235,9 +2232,11 @@ mod tests {
             .flat_map(|route| route["hosts"].as_array().unwrap())
             .filter_map(Value::as_str)
             .collect::<Vec<_>>();
-        for expected in ["ai.myc", "mcp.myc", "home.myc", "webhook.myc", "store.myc"] {
+        for expected in ["ai.myc", "mcp.myc", "webhook.myc", "store.myc"] {
             assert!(hosts.contains(&expected));
         }
+        let dashboard = routes["dashboard"]["hosts"].as_array().unwrap();
+        assert!(dashboard.iter().any(|host| host == "home.myc"));
     }
 
     #[test]
@@ -2357,15 +2356,15 @@ mod tests {
     }
 
     #[test]
-    fn home_route_has_no_invented_backend() {
+    fn home_is_the_dashboard_not_a_proxy_route() {
         let routes = default_routes(Path::new("/tmp/mycelium-home"));
         let home = routes["routes"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|route| route["name"] == "home")
-            .unwrap();
-        assert!(home.get("upstream").is_none());
+            .find(|route| route["name"] == "home");
+        assert!(home.is_none(), "the old launcher route must not come back");
+        assert_eq!(routes["dashboard"]["hosts"][0], "home.myc");
     }
 
     #[test]

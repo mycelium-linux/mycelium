@@ -1484,9 +1484,18 @@ MENUBAR
     fi
 
     if [ "$(uname -s)" = Darwin ]; then
-        if [ -x "$HOME/.local/share/fungos/bin/soil-home" ]; then
-            install_launch_agent dev.fungos.soil-home "$HOME/.local/share/fungos/bin/soil-home" \
-                "$HOME/.local/share/fungos/store/home.log" --routes "$MYCELIUM_HOME/frontdoor/routes.json"
+        # The old launcher that answered home.myc is retired: the frontdoor
+        # serves the Mycelium dashboard on that host itself. Stop any agent an
+        # earlier install left behind so two things cannot claim the name.
+        if [ -f "$HOME/Library/LaunchAgents/dev.fungos.soil-home.plist" ]; then
+            if [ "$DRY_RUN" = 1 ]; then
+                note "would retire the dev.fungos.soil-home launcher"
+            else
+                launchctl bootout "gui/$(id -u)/dev.fungos.soil-home" >/dev/null 2>&1 || true
+                mv "$HOME/Library/LaunchAgents/dev.fungos.soil-home.plist" \
+                    "$HOME/Library/LaunchAgents/dev.fungos.soil-home.plist.retired-$TS" 2>/dev/null || true
+                note "retired soil-home; home.myc is the Mycelium dashboard"
+            fi
         fi
         if [ -x "$HOME/.local/share/fungos/bin/soil-store" ]; then
             install_launch_agent dev.fungos.soil-store "$HOME/.local/share/fungos/bin/soil-store" \
@@ -1499,9 +1508,17 @@ MENUBAR
                 --page "$HOME/.local/share/fungos/store/page"
         fi
     else
-        if [ -x "$HOME/.local/share/fungos/bin/soil-home" ]; then
-            install_user_unit dev.fungos.soil-home "$HOME/.local/share/fungos/bin/soil-home" \
-                --routes "$MYCELIUM_HOME/frontdoor/routes.json"
+        # Linux: same retirement as macOS. `home.myc` is the frontdoor's
+        # dashboard, so the launcher service must not keep running.
+        if [ -f "$HOME/.config/systemd/user/dev.fungos.soil-home.service" ]; then
+            if [ "$DRY_RUN" = 1 ]; then
+                note "would retire the dev.fungos.soil-home user unit"
+            else
+                systemctl --user disable --now dev.fungos.soil-home.service >/dev/null 2>&1 || true
+                mv "$HOME/.config/systemd/user/dev.fungos.soil-home.service" \
+                    "$HOME/.config/systemd/user/dev.fungos.soil-home.service.retired-$TS" 2>/dev/null || true
+                note "retired soil-home; home.myc is the Mycelium dashboard"
+            fi
         fi
         if [ -x "$HOME/.local/share/fungos/bin/soil-store" ]; then
             install_user_unit dev.fungos.soil-store "$HOME/.local/share/fungos/bin/soil-store" \
