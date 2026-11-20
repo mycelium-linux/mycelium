@@ -15,13 +15,16 @@ nothing.
 | Section | What it answers | How it reads |
 |---|---|---|
 | **Overview** | Is the daemon up, is the overlay up, are the frontdoor and peers healthy? | `node status`, `fleet status`, `iroh-tun status`, internal frontdoor state |
-| **Fleet members** | Who is enrolled, where, how fresh, what version, is SSH listening? | `fleet status --json` |
+| **Fleet members** | Who is enrolled, where, how fresh, what version, is SSH listening? Search by host/site/node, filter by site, sort, and open a row for addresses, capabilities and identity. | `fleet status --json` joined with `peers --json` |
+| **Unibus** | Is the local bus up, which producers are configured, what they publish, where kinds route, and the recent hub log? | `~/.config/unibus/hub.json` + a TCP probe + `hub.log` tail |
 | **Geode** | Is the owner-local broker live, is its store private, how big is it? | socket probe + `~/.geode` metadata |
-| **Desktops & VFS** | Which content roots exist and are mounted; which Canvas surfaces are installed? | `mount` + the Spore install roots |
+| **Desktops & VFS** | Which content roots exist and are mounted; which Canvas surfaces are installed; one click to the Files app (`files.myc`). | `mount` + the Spore install roots |
 | **Pulse** | Which schedules the daemon owns, and what they last did. | `pulse list`, `pulse runs` |
-| **Settings** | Dashboard refresh/theme, public relays, the frontdoor route table. | `dashboard.json`, `iroh-sync.json`, `routes.json` + `sync relays` |
+| **Settings** | Dashboard refresh/theme, public relays, the **overlay tunnel** (`iroh-tun`), and the frontdoor route table. | `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` + `sync relays` / `iroh-tun config --write` |
 
-Geode and VFS are deliberately read-only here. Leasing a secret and mounting a
+Unibus is a TCP bus with no HTTP admin surface, so the page reports the hub
+it can verify (listener, producers, routes, recent log) rather than inventing
+one. Geode and VFS are deliberately read-only here. Leasing a secret and mounting a
 filesystem are operator authority with their own confirmation path; a browser
 form is not that path. The page says so rather than hiding the surface.
 
@@ -41,6 +44,7 @@ holding a frontdoor token. The frontdoor's own bearer-token check runs first.
 | Tunnel restart | `mycelium iroh-tun restart --write` |
 | Public relays | `mycelium sync relays enable|disable --write` |
 | Pulse add/toggle/remove | `mycelium pulse add|toggle|remove … --write` |
+| Overlay settings | `mycelium iroh-tun config … --write` |
 | Save routes | validates with `FrontdoorConfig` and writes `routes.json` |
 
 Dashboard preferences are the only state the page owns:
