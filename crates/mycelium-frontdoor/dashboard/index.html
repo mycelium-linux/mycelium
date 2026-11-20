@@ -216,6 +216,11 @@ details.advanced .body{padding:0 0 18px}
 .rootlist button.active{background:var(--panel-2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
 .rootlist .rname{font-weight:550}
 .rootlist .rpath{font:10px/1.4 var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.rootrow{display:flex;align-items:center;gap:4px}
+.rootrow .rootbtn{flex:1;min-width:0}
+.rootrow .iconbtn{border:0;background:transparent;color:var(--dim);padding:6px;border-radius:7px;font-size:12px}
+.rootrow .iconbtn:hover{background:var(--panel-2);color:var(--ink)}
+.rmount{display:block;font-size:10px;color:var(--dim)}
 .crumbs{display:flex;align-items:center;gap:4px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;min-height:41px}
 .crumbs button{border:0;background:transparent;color:var(--muted);font-size:11.5px;padding:2px 4px;border-radius:5px}
 .crumbs button:hover{background:var(--panel-2);color:var(--ink)}
@@ -237,7 +242,13 @@ details.advanced .body{padding:0 0 18px}
 .preview .empty{padding:22px 16px}
 
 /* spores / connectors */
-.spore-card{display:flex;flex-direction:column;gap:6px}
+.spore-card{display:flex;flex-direction:column;gap:12px}
+.spore-top{display:flex;align-items:center;gap:12px}
+.spore-logo{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;flex:none;font-weight:700;font-size:14px;overflow:hidden}
+.spore-logo img{width:100%;height:100%;object-fit:cover}
+.spore-head{flex:1;min-width:0}
+.spore-head .name{font-weight:600;font-size:13.5px}
+.spore-head .sum{color:var(--muted);font-size:12px;margin-top:1px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .spore-card .st{display:flex;align-items:center;gap:8px}
 .spore-card .st .name{font-weight:600;font-size:13.5px}
 .spore-card .sum{color:var(--muted);font-size:12px;min-height:34px}
@@ -252,6 +263,20 @@ details.advanced .body{padding:0 0 18px}
 .conn .line:last-child{border-bottom:0}
 .conn .line .k2{color:var(--dim)}
 .conn .line .v2{font-family:var(--mono);font-size:11px;text-align:right;word-break:break-all}
+.conn.wide{grid-column:1/-1}
+.accounts{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px}
+.account{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:3px 9px;font-size:11.5px}
+.backends{display:flex;flex-direction:column;gap:2px}
+.backend{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.backend:last-child{border-bottom:0}
+.backend .bn{font-weight:550;font-size:12.5px;min-width:92px}
+.backend .bd{width:9px;height:9px;border-radius:50%;flex:none}
+.backend .bspace{flex:1}
+.conn-details{margin-top:10px}
+.conn-details summary{cursor:pointer;color:var(--muted);font-size:11.5px;list-style:none}
+.conn-details summary::-webkit-details-marker{display:none}
+.conn-details summary::before{content:"›";margin-right:6px;display:inline-block}
+.conn-details[open] summary::before{transform:rotate(90deg)}
 
 @media(max-width:760px){
   .shell{grid-template-columns:1fr}
@@ -360,7 +385,16 @@ details.advanced .body{padding:0 0 18px}
             <div class="field"><label>Name (optional)</label><input id="p-id" placeholder="morning-check" autocomplete="off"></div>
           </div>
           <div class="field" id="p-cron-field" style="display:none"><label>Custom schedule</label><input id="p-schedule" placeholder="*/15 * * * *" autocomplete="off"></div>
-          <div class="field"><label>What should it run?</label><input id="p-command" placeholder="mycelium doctor" autocomplete="off"></div>
+          <div class="field"><label>What should it run?</label>
+            <select id="p-command-select">
+              <option value="mycelium doctor">Health check</option>
+              <option value="mycelium doctor --json">Health check (JSON)</option>
+              <option value="mycelium software reconcile --dry-run">Check for updates</option>
+              <option value="mycelium pulse runs --limit 5">List recent runs</option>
+              <option value="custom">Custom command…</option>
+            </select>
+          </div>
+          <div class="field" id="p-command-field" style="display:none"><label>Custom command</label><input id="p-command" placeholder="mycelium doctor" autocomplete="off"></div>
           <div class="actions"><button class="btn primary" id="p-add">Add pulse</button><button class="btn" id="p-cancel">Cancel</button></div>
         </div>
       </div>
@@ -377,7 +411,7 @@ details.advanced .body{padding:0 0 18px}
           <h2>Activity</h2>
           <p class="lede">A human view of the local bus: who is connected, what they publish, and what just happened.</p>
         </div>
-        <button class="btn" id="unibus-copy">Copy config path</button>
+        <button class="btn" id="unibus-reveal">Reveal config</button>
       </div>
       <div id="bus-hero"></div>
       <div class="split" style="margin-bottom:14px">
@@ -427,7 +461,7 @@ details.advanced .body{padding:0 0 18px}
           <h2>Spores</h2>
           <p class="lede">The small apps installed on this machine. Open one where it lives, or install something new from the Store.</p>
         </div>
-        <a class="btn" href="https://store.myc/" target="_blank" rel="noreferrer">Open Store</a>
+        <a class="btn primary" href="https://store.myc/" target="_blank" rel="noreferrer">Install a Spore</a>
       </div>
       <div class="toolbar">
         <input id="spore-search" type="search" placeholder="Filter Spores…" autocomplete="off">
@@ -501,7 +535,7 @@ details.advanced .body{padding:0 0 18px}
             <div class="row">
               <label class="upload" for="profile-avatar-input">Choose picture…</label>
               <input id="profile-avatar-input" type="file" accept="image/*">
-              <span class="hint" id="profile-hint">PNG, JPEG or WebP, up to 2 MiB.</span>
+              <span class="hint" id="profile-hint">PNG, JPEG or WebP. Large pictures are resized to 512px before upload.</span>
             </div>
           </div>
           <button class="btn primary" id="profile-save">Save profile</button>
@@ -510,7 +544,9 @@ details.advanced .body{padding:0 0 18px}
       <div class="split">
         <div class="card">
           <div class="k">Dashboard</div>
-          <div class="field" style="margin-top:10px"><label>Refresh interval (seconds)</label><input id="s-refresh" type="number" min="3" max="300"></div>
+          <div class="field" style="margin-top:10px"><label>Refresh interval</label>
+            <select id="s-refresh"><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option></select>
+          </div>
           <div class="field"><label>Theme</label>
             <select id="s-theme"><option value="auto">Match the system</option><option value="dark">Dark</option><option value="light">Light</option></select>
           </div>
@@ -529,10 +565,18 @@ details.advanced .body{padding:0 0 18px}
             <input class="switch" type="checkbox" id="o-enabled">
           </div>
           <div class="formgrid" style="margin-top:10px">
-            <div class="field"><label>Interface</label><input id="o-tun" placeholder="utun220"></div>
-            <div class="field"><label>MTU</label><input id="o-mtu" type="number" min="576" max="9000" placeholder="1380"></div>
-            <div class="field"><label>Refresh (seconds)</label><input id="o-refresh" type="number" min="5" max="3600" placeholder="30"></div>
-            <div class="field"><label>Listen</label><input id="o-listen" placeholder="0.0.0.0:7444"></div>
+            <div class="field"><label>Interface</label>
+              <select id="o-tun"><option value="utun220">utun220</option><option value="utun210">utun210</option><option value="utun200">utun200</option><option value="utun100">utun100</option><option value="utun10">utun10</option></select>
+            </div>
+            <div class="field"><label>MTU</label>
+              <select id="o-mtu"><option value="1280">1280</option><option value="1380">1380</option><option value="1400">1400</option><option value="1500">1500</option></select>
+            </div>
+            <div class="field"><label>Refresh</label>
+              <select id="o-refresh"><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option></select>
+            </div>
+            <div class="field"><label>Listen</label>
+              <select id="o-listen"><option value="0.0.0.0:7444">all interfaces :7444</option><option value="127.0.0.1:7444">loopback :7444</option></select>
+            </div>
           </div>
           <div class="field"><label>Overlay CIDRs (comma or newline separated)</label><textarea id="o-overlay" style="min-height:72px" placeholder="fd00:mycelium::/64"></textarea></div>
           <div class="toggle">
@@ -658,6 +702,14 @@ async function copy(value, label = "Copied") {
   } catch (error) {
     toast("Clipboard unavailable: " + error.message, true);
   }
+}
+
+async function reveal(path) {
+  if (!path) return;
+  try {
+    const value = await api("/api/reveal", { method: "POST", body: JSON.stringify({ path }) });
+    if (value?.ok === false) throw new Error(value.error);
+  } catch (error) { toast(error.message, true); }
 }
 
 async function api(path, options = {}) {
@@ -795,13 +847,16 @@ function renderFiles() {
   if (!filesState.root && roots.length) filesState.root = roots[0].path;
 
   $("files-roots").innerHTML = roots.length ? roots.map((root) => `
-    <button data-root="${esc(root.path)}" class="${root.path === filesState.root ? "active" : ""}">
-      <span class="ficon">${root.mounted ? "◈" : "◇"}</span>
-      <span style="flex:1;min-width:0">
-        <span class="rname">${esc(root.path.split("/").filter(Boolean).pop() || root.path)}</span>
-        <span class="rpath">${esc(root.path)}</span>
-      </span>
-    </button>`).join("") : '<div class="empty">No roots.</div>';
+    <div class="rootrow">
+      <button class="rootbtn ${root.path === filesState.root ? "active" : ""}" data-root="${esc(root.path)}" title="${esc(root.path)}">
+        <span class="ficon">${root.mounted ? "◈" : "◇"}</span>
+        <span style="flex:1;min-width:0">
+          <span class="rname">${esc(root.path.split("/").filter(Boolean).pop() || root.path)}</span>
+          <span class="rmount">${root.mounted ? "mounted" : "not mounted"} · ${esc(root.entries)} items</span>
+        </span>
+      </button>
+      <button class="iconbtn" data-reveal="${esc(root.path)}" title="Reveal in Finder">⌘</button>
+    </div>`).join("") : '<div class="empty">No roots.</div>';
 
   const parts = filesState.path.split("/").filter(Boolean);
   const rootName = (filesState.root || "").split("/").filter(Boolean).pop() || "root";
@@ -831,7 +886,7 @@ function renderFiles() {
 
 function renderPreview() {
   const listing = filesState.listing;
-  const file = listing?.file || filesState.selected;
+  const file = filesState.selected || listing?.file;
   if (!file) {
     $("files-preview").innerHTML = '<div class="ph">Preview</div><div class="empty">Select a file.</div>';
     return;
@@ -853,7 +908,10 @@ function renderPreview() {
       <div class="pname">${esc(file.name)}</div>
       <div class="pmeta">${esc(bytes(file.size))} · ${esc(kind)}${file.modified_ms ? " · " + esc(when(file.modified_ms)) : ""}</div>
       ${body}
-      ${kind.startsWith("image/") || file.preview !== null ? "" : `<div class="actions"><a class="btn small" href="${esc(filesInfo().url || "https://files.myc/")}" target="_blank" rel="noreferrer">Open in Files</a></div>`}
+      <div class="actions">
+        <button class="btn small" data-reveal="${esc(filesState.root + "/" + (filesState.path ? filesState.path + "/" : "") + file.name)}">Reveal in Finder</button>
+        <a class="btn small" href="${esc(filesInfo().url || "https://files.myc/")}" target="_blank" rel="noreferrer">Open in Files</a>
+      </div>
     </div>`;
 }
 
@@ -878,7 +936,6 @@ function selectFile(name) {
     return;
   }
   filesState.selected = entry;
-  filesState.listing = { file: entry };
   renderFiles();
 }
 
@@ -889,84 +946,150 @@ function renderSpores() {
   const rows = all.filter((spore) => !q || [spore.title, spore.name, spore.id, spore.summary]
     .filter(Boolean).join(" ").toLowerCase().includes(q));
   $("spore-meta").textContent = `${rows.length} of ${all.length}`;
-  $("spores-grid").innerHTML = rows.length ? rows.map((spore) => `
-    <div class="card spore-card">
-      <div class="st"><span class="name">${esc(spore.title || spore.name || spore.id)}</span>
-        ${spore.desktop ? '<span class="tag on">desktop</span>' : ""}</div>
-      <div class="sum">${esc(spore.summary || spore.name || "")}</div>
-      <div class="meta"><span class="chip">${esc(spore.id)}</span>
-        ${spore.version ? `<span class="tag">v${esc(spore.version)}</span>` : ""}
-        <span class="tag">${esc(spore.grants || 0)} grants</span></div>
-      <div class="acts">
-        <a class="btn small" href="${esc(spore.open_url || filesInfo().url || "https://files.myc/")}" target="_blank" rel="noreferrer">Open</a>
-        <button class="btn small" data-copy="${esc(spore.path)}">Copy path</button>
+  $("spores-grid").innerHTML = rows.length ? rows.map((spore) => {
+    const title = spore.title || spore.name || spore.id;
+    const badge = spore.badge || String(title).slice(0, 2);
+    const color = /^#[0-9a-f]{3,8}$/i.test(spore.color || "") ? spore.color : "#c9b3ff";
+    const logo = spore.mark
+      ? `<img src="/api/spore/icon?id=${encodeURIComponent(spore.id)}" alt="">`
+      : esc(badge);
+    return `<div class="card spore-card">
+      <div class="spore-top">
+        <span class="spore-logo" style="background:${color}22;color:${color}">${logo}</span>
+        <div class="spore-head">
+          <div class="name">${esc(title)}</div>
+          <div class="sum">${esc(spore.summary || spore.name || "")}</div>
+        </div>
+        ${spore.desktop ? '<span class="tag on">desktop</span>' : ""}
       </div>
-    </div>`).join("") : '<div class="empty">No Spores match this filter.</div>';
+      <div class="acts" style="margin-top:auto">
+        <a class="btn small primary" href="${esc(spore.open_url || filesInfo().url || "https://files.myc/")}" target="_blank" rel="noreferrer">Open</a>
+        <button class="btn small" data-reveal="${esc(spore.path)}" title="Reveal in Finder">Reveal</button>
+      </div>
+    </div>`;
+  }).join("") : '<div class="empty">No Spores match this filter.</div>';
+}
+
+function connectorColor(name) {
+  return {
+    local: "#c9b3ff",
+    agora: "#f0a35e",
+    loki: "#6fbf9a",
+    "fpl-cloud": "#8b9dff",
+  }[name] || "#c9b3ff";
 }
 
 function renderConnectors() {
   const c = connectorsInfo();
   const ai = c.ai || {};
+  const bifrost = ai.bifrost || {};
+  const users = list(bifrost.users);
+  const backends = list(bifrost.backends);
   const mcp = c.mcp || {};
   const logs = c.logs || {};
   const cf = c.cloudflare || {};
   const domain = c.domain || {};
   const sporeCount = sporeList().length;
-  const card = (title, iconName, body) => `<div class="card conn">
-      <div class="conn-head"><div class="ico">${icon(iconName)}</div><div><div class="t">${esc(title)}</div><div class="s">${title === "AI" ? "ai.myc · Bifrost" : title === "MCP" ? "mcp.myc · tools" : title === "Logs" ? "Loki" : title === "Cloudflare" ? "public ingress" : "this machine"}</div></div></div>
-      ${body}
-    </div>`;
 
-  const keyRows = list(ai.keys).map((key) => `<div class="line"><span class="k2">${esc(key.path)}</span><span class="v2">${key.present ? bytes(key.bytes) : "missing"}</span></div>`).join("");
+  const accounts = users.length ? users.map((user) => `
+    <span class="account"><span class="dot ok"></span>${esc(user.name)}${user.has_key === false ? ' <span class="dim">· no key</span>' : ""}</span>`).join("")
+    : '<span class="dim">No accounts in the local Bifrost config.</span>';
+
+  const backendRows = backends.length ? backends.map((backend) => `
+    <div class="backend">
+      <span class="bd" style="background:${connectorColor(backend.name)}"></span>
+      <span class="bn">${esc(backend.label || backend.name)}</span>
+      ${backend.aliases ? `<span class="chip">${esc(backend.aliases)} models</span>` : ""}
+      <span class="bspace"></span>
+      ${backend.api_key_env ? `<span class="tag">key: ${esc(backend.api_key_env)}</span>` : ""}
+      <span class="tag ${backend.reachable ? "on" : "off"}">${backend.reachable ? "up" : "down"}</span>
+    </div>`).join("")
+    : '<div class="empty">No backends in the local Bifrost config.</div>';
+
+  const mcpConfigs = list(mcp.configs);
   const aiBody = `
-    <div class="line"><span class="k2">Endpoint</span><span class="v2">${ai.reachable ? "reachable" : "offline"}</span></div>
-    ${list(ai.upstreams).map((url) => `<div class="line"><span class="k2">Upstream</span><span class="v2">${esc(url)}</span></div>`).join("")}
-    ${keyRows}
-    <div class="field" style="margin:10px 0 0"><label>API key</label><input id="ai-key" type="password" placeholder="sk-…" autocomplete="off"></div>
-    <div class="actions" style="margin-top:8px">
-      <button class="btn primary small" id="ai-key-save">Save key</button>
-      ${ai.link ? `<a class="btn small" href="${esc(ai.link)}" target="_blank" rel="noreferrer">Open ai.myc</a>` : ""}
-    </div>`;
+    <div class="accounts">${accounts}</div>
+    <div class="backends">${backendRows}</div>
+    <details class="conn-details">
+      <summary>Replace the AI API key</summary>
+      <div class="field" style="margin-top:8px"><label>New key</label><input id="ai-key" type="password" placeholder="sk-…" autocomplete="off"></div>
+      <div class="actions">
+        <button class="btn primary small" id="ai-key-save">Save key</button>
+        ${ai.link ? `<a class="btn small" href="${esc(ai.link)}" target="_blank" rel="noreferrer">Open ai.myc</a>` : ""}
+      </div>
+      <div class="hint">Written to the host-owned key file, not stored in this page.</div>
+    </details>`;
 
-  const mcpConfigs = list(mcp.configs).map((cfg) => `<div class="line"><span class="k2">${esc(cfg.name)}</span><span class="v2">${esc(ago((cfg.updated_ms || 0) / 1000))}</span></div>`).join("");
   const mcpBody = `
     <div class="line"><span class="k2">Endpoint</span><span class="v2">${mcp.reachable ? "reachable" : "offline"}</span></div>
-    ${list(mcp.upstreams).map((url) => `<div class="line"><span class="k2">Upstream</span><span class="v2">${esc(url)}</span></div>`).join("")}
-    ${mcpConfigs}
-    ${mcp.link ? `<div class="actions"><a class="btn small" href="${esc(mcp.link)}" target="_blank" rel="noreferrer">Open mcp.myc</a></div>` : ""}`;
+    <div class="line"><span class="k2">Configs</span><span class="v2">${mcpConfigs.length} files</span></div>
+    <div class="actions">
+      ${mcp.link ? `<a class="btn small" href="${esc(mcp.link)}" target="_blank" rel="noreferrer">Open mcp.myc</a>` : ""}
+    </div>`;
 
   const logsBody = `
-    <div class="line"><span class="k2">Endpoint</span><span class="v2">${logs.reachable ? "reachable" : "offline"} · ${esc(logs.listen || "")}</span></div>
-    <div class="line"><span class="k2">Config</span><span class="v2">${esc(logs.config?.path || "")}</span></div>
-    <div class="line"><span class="k2">State</span><span class="v2">${logs.config?.present ? "present" : "missing"}</span></div>`;
+    <div class="line"><span class="k2">Service</span><span class="v2">${logs.reachable ? "reachable" : "offline"}</span></div>
+    <div class="line"><span class="k2">Config</span><span class="v2">${logs.config?.present ? "present" : "missing"}</span></div>
+    <div class="actions">${logs.config?.path ? `<button class="btn small" data-reveal="${esc(logs.config.path)}">Reveal config</button>` : ""}</div>`;
 
   const cloudflareBody = `
     <div class="line"><span class="k2">Connector</span><span class="v2">${cf.running ? "running" : "stopped"}</span></div>
-    <div class="line"><span class="k2">Service</span><span class="v2">${cf.installed ? "installed" : "not installed"}</span></div>
+    <div class="line"><span class="k2">Managed service</span><span class="v2">${cf.installed ? "installed" : "not installed"}</span></div>
     <div class="line"><span class="k2">Token</span><span class="v2">${cf.token?.present ? "present" : "missing"}</span></div>
-    <div class="actions"><button class="btn small" data-copy="${esc(cf.command || "")}">Copy setup command</button></div>
-    <div class="hint">The managed installer needs root; the dashboard does not run it for you.</div>`;
+    <details class="conn-details">
+      <summary>Managed setup</summary>
+      <p class="hint">The managed installer needs root, so the dashboard does not run it.</p>
+      <div class="actions"><button class="btn small" data-copy="${esc(cf.command || "")}">Copy command</button></div>
+    </details>`;
 
   const domainBody = `
-    <div class="line"><span class="k2">Site</span><span class="v2">${esc(hello()?.site || "—")}</span></div>
-    <div style="margin-top:8px">${list(domain.hosts).map((host) => `<a class="chip" href="https://${esc(host)}/" target="_blank" rel="noreferrer">${esc(host)}</a>`).join("") || '<span class="dim">No .myc hosts.</span>'}</div>`;
+    <div class="accounts">${list(domain.hosts).map((host) => `<a class="account" href="https://${esc(host)}/" target="_blank" rel="noreferrer">${esc(host)}</a>`).join("") || '<span class="dim">No .myc hosts.</span>'}</div>`;
 
   const sporeBody = `
     <div class="line"><span class="k2">Installed</span><span class="v2">${sporeCount} Spores</span></div>
     <div class="line"><span class="k2">Desktop</span><span class="v2">${sporeList().filter((s) => s.desktop).length}</span></div>
-    <div class="actions"><a class="btn small" href="https://store.myc/" target="_blank" rel="noreferrer">Open Store</a></div>`;
+    <div class="actions"><a class="btn small primary" href="https://store.myc/" target="_blank" rel="noreferrer">Install a Spore</a></div>`;
+
+  const card = (title, iconName, subtitle, body, wide = false) => `<div class="card conn ${wide ? "wide" : ""}">
+      <div class="conn-head"><div class="ico">${icon(iconName)}</div><div><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div></div></div>
+      ${body}
+    </div>`;
 
   $("connect-body").innerHTML = `<div class="grid">
-    ${card("AI", "pulse", aiBody)}
-    ${card("MCP", "fleet", mcpBody)}
-    ${card("Logs", "activity", logsBody)}
-    ${card("Cloudflare", "connect", cloudflareBody)}
-    ${card("Domain", "files", domainBody)}
-    ${card("Spores", "spores", sporeBody)}
+    ${card("AI", "pulse", "ai.myc · accounts and model backends", aiBody, true)}
+    ${card("MCP", "fleet", "mcp.myc", mcpBody)}
+    ${card("Logs", "activity", "Loki", logsBody)}
+    ${card("Cloudflare", "connect", "public ingress", cloudflareBody)}
+    ${card("Domain", "files", "hosts this frontdoor serves", domainBody)}
+    ${card("Spores", "spores", "installed apps", sporeBody)}
   </div>`;
 }
 
-/* ---------- pulse ---------- */
+/* ---------- fleet ---------- */
+function fleetView() {
+  const rows = fleetRows();
+  const sites = [...new Set(rows.map((r) => r.site).filter(Boolean))].sort();
+  const select = $("fleet-site");
+  const current = select.value;
+  select.innerHTML = '<option value="">All sites</option>' + sites.map((site) =>
+    `<option value="${esc(site)}"${site === fleet.site ? " selected" : ""}>${esc(site)}</option>`).join("");
+  if (current && !sites.includes(current)) select.value = "";
+
+  const q = fleet.query.toLowerCase();
+  return rows
+    .filter((row) => !fleet.site || row.site === fleet.site)
+    .filter((row) => !q || [row.hostname, row.site, row.node_id, row.platform, row.daemon_version]
+      .filter(Boolean).join(" ").toLowerCase().includes(q))
+    .sort((a, b) => {
+      if (fleet.sort === "name") return String(a.hostname || "").localeCompare(String(b.hostname || ""));
+      if (fleet.sort === "site") return String(a.site || "").localeCompare(String(b.site || "")) || String(a.hostname || "").localeCompare(String(b.hostname || ""));
+      if (fleet.sort === "version") return String(b.daemon_version || "").localeCompare(String(a.daemon_version || ""));
+      return (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
+    });
+}
+
+function sshCommand(peer) { return `mycelium ssh ${peer.hostname || peer.node_id || ""}`.trim(); }
+
 const SYSTEM_NAMES = {
   "system.ssh-renewal-issuer": "Answer SSH renewal requests",
   "system.ssh-renewal-check": "Renew this node's SSH certificate",
@@ -1168,31 +1291,6 @@ function renderGeode() {
 }
 
 /* ---------- files ---------- */
-/* ---------- fleet ---------- */
-function fleetView() {
-  const rows = fleetRows();
-  const sites = [...new Set(rows.map((r) => r.site).filter(Boolean))].sort();
-  const select = $("fleet-site");
-  const current = select.value;
-  select.innerHTML = '<option value="">All sites</option>' + sites.map((site) =>
-    `<option value="${esc(site)}"${site === fleet.site ? " selected" : ""}>${esc(site)}</option>`).join("");
-  if (current && !sites.includes(current)) select.value = "";
-
-  const q = fleet.query.toLowerCase();
-  return rows
-    .filter((row) => !fleet.site || row.site === fleet.site)
-    .filter((row) => !q || [row.hostname, row.site, row.node_id, row.platform, row.daemon_version]
-      .filter(Boolean).join(" ").toLowerCase().includes(q))
-    .sort((a, b) => {
-      if (fleet.sort === "name") return String(a.hostname || "").localeCompare(String(b.hostname || ""));
-      if (fleet.sort === "site") return String(a.site || "").localeCompare(String(b.site || "")) || String(a.hostname || "").localeCompare(String(b.hostname || ""));
-      if (fleet.sort === "version") return String(b.daemon_version || "").localeCompare(String(a.daemon_version || ""));
-      return (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
-    });
-}
-
-function sshCommand(peer) { return `mycelium ssh ${peer.hostname || peer.node_id || ""}`.trim(); }
-
 function renderFleet() {
   const all = fleetRows();
   const online = all.filter((peer) => fresh(peer.last_seen)).length;
@@ -1235,24 +1333,41 @@ function renderFleet() {
 }
 
 /* ---------- settings ---------- */
+function setSelect(id, value) {
+  const element = $(id);
+  if (!element) return;
+  const wanted = String(value ?? "");
+  if (wanted && ![...element.options].some((option) => option.value === wanted)) {
+    const option = document.createElement("option");
+    option.value = wanted;
+    option.textContent = wanted;
+    element.appendChild(option);
+  }
+  element.value = wanted;
+}
+
 function renderSettings() {
   const s = summary?.settings || {};
-  $("s-refresh").value = s.refresh_secs ?? 10;
+  setSelect("s-refresh", s.refresh_secs ?? 10);
   $("s-theme").value = s.theme || "auto";
   $("s-relays").checked = s.public_relays === true;
-  $("s-path").textContent = summary?.settings_path || "";
+  $("s-path").innerHTML = summary?.settings_path
+    ? `<button class="btn small" data-reveal="${esc(summary.settings_path)}">Reveal dashboard config</button>`
+    : "";
 
   const overlay = summary?.overlay_config || {};
   const config = overlay.config || {};
   const status = tunnel() || {};
   $("o-enabled").checked = config.enabled === true;
-  $("o-tun").value = config.tun || "";
-  $("o-mtu").value = config.mtu ?? "";
-  $("o-refresh").value = config.refresh_secs ?? "";
-  $("o-listen").value = config.listen || "";
+  setSelect("o-tun", config.tun || "utun220");
+  setSelect("o-mtu", config.mtu ?? 1380);
+  setSelect("o-refresh", config.refresh_secs ?? 30);
+  setSelect("o-listen", config.listen || "0.0.0.0:7444");
   $("o-overlay").value = list(config.overlay).join("\n");
   $("o-external").checked = config.external === true;
-  $("o-path").textContent = overlay.path || "";
+  $("o-path").innerHTML = overlay.path
+    ? `<button class="btn small" data-reveal="${esc(overlay.path)}">Reveal tunnel config</button>`
+    : "";
   $("o-status").textContent = status.enabled === undefined
     ? ""
     : `status: ${status.running ? "running" : "stopped"}${status.publishing ? ", publishing" : ""}${status.config_error ? " — " + status.config_error : ""}`;
@@ -1287,7 +1402,9 @@ async function loadRoutes() {
   try {
     const value = await api("/api/routes");
     $("routes-text").value = JSON.stringify(value?.routes || {}, null, 2);
-    $("routes-path").textContent = value?.path || "";
+    $("routes-path").innerHTML = value?.path
+      ? `<button class="btn small" data-reveal="${esc(value.path)}">Reveal routes file</button>`
+      : "";
     if (value && value.ok === false) toast(value.error, true);
   } catch (error) { toast(error.message, true); }
 }
@@ -1313,6 +1430,7 @@ function showTab(name) {
   document.querySelectorAll("main section").forEach((section) => section.classList.toggle("active", section.id === "tab-" + name));
   if (name === "settings") loadRoutes();
   if (name === "files" && !filesState.listing) loadDir("");
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 $("nav").addEventListener("click", (event) => {
@@ -1361,6 +1479,8 @@ document.addEventListener("click", async (event) => {
   }
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) { copy(copyButton.dataset.copy, "Copied"); return; }
+  const revealButton = event.target.closest("[data-reveal]");
+  if (revealButton) { reveal(revealButton.dataset.reveal); return; }
   const row = event.target.closest("tr[data-node]");
   if (row && !event.target.closest("button, a")) {
     fleet.expanded = fleet.expanded === row.dataset.node ? "" : row.dataset.node;
@@ -1394,7 +1514,7 @@ $("fleet-site").addEventListener("change", (event) => { fleet.site = event.targe
 $("fleet-sort").addEventListener("change", (event) => { fleet.sort = event.target.value; renderFleet(); });
 $("refresh").addEventListener("click", () => load());
 $("routes-reload").addEventListener("click", loadRoutes);
-$("unibus-copy").addEventListener("click", () => copy(summary?.unibus?.config || "", "Copied hub config path"));
+$("unibus-reveal").addEventListener("click", () => reveal(summary?.unibus?.config || ""));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load({ silent: true }); });
 
 $("pulse-add-toggle").addEventListener("click", () => {
@@ -1405,11 +1525,15 @@ $("p-cancel").addEventListener("click", () => { $("pulse-add-form").style.displa
 $("p-when").addEventListener("change", (event) => {
   $("p-cron-field").style.display = event.target.value === "custom" ? "block" : "none";
 });
+$("p-command-select").addEventListener("change", (event) => {
+  $("p-command-field").style.display = event.target.value === "custom" ? "block" : "none";
+});
 
 $("p-add").addEventListener("click", async () => {
   const when = $("p-when").value;
   const schedule = when === "custom" ? $("p-schedule").value.trim() : when;
-  const command = $("p-command").value.trim();
+  const picked = $("p-command-select").value;
+  const command = picked === "custom" ? $("p-command").value.trim() : picked;
   if (!schedule || !command) return toast("pick when and what it should run", true);
   const payload = { schedule, command };
   const id = $("p-id").value.trim();
@@ -1418,6 +1542,8 @@ $("p-add").addEventListener("click", async () => {
     const value = await api("/api/pulse", { method: "POST", body: JSON.stringify(payload) });
     if (value?.ok === false) throw new Error(value.error);
     $("p-id").value = ""; $("p-command").value = ""; $("p-schedule").value = "";
+    $("p-command-select").value = "mycelium doctor";
+    $("p-command-field").style.display = "none";
     $("pulse-add-form").style.display = "none";
     toast("pulse added");
     await load({ silent: true });
@@ -1479,15 +1605,32 @@ let pendingAvatar = null;
 $("profile-avatar-input").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
-  if (file.size > 2 * 1024 * 1024) return toast("picture is larger than 2 MiB", true);
+  if (file.size > 20 * 1024 * 1024) return toast("picture is larger than 20 MiB", true);
   const reader = new FileReader();
   reader.onload = () => {
     const data = String(reader.result || "");
-    const comma = data.indexOf(",");
-    pendingAvatar = { base64: data.slice(comma + 1), type: file.type };
-    $("profile-avatar-lg").style.backgroundImage = `url(${data})`;
-    $("profile-avatar-lg").textContent = "";
-    $("profile-hint").textContent = `${file.name} · ready to save`;
+    const image = new Image();
+    image.onload = () => {
+      // Avatars are shown at 64px; a 12MP photo has no business crossing the
+      // socket. Resize once here, and the stored file stays small forever.
+      const max = 512;
+      const scale = Math.min(1, max / Math.max(image.width, image.height));
+      const width = Math.max(1, Math.round(image.width * scale));
+      const height = Math.max(1, Math.round(image.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0, width, height);
+      const resized = canvas.toDataURL("image/jpeg", 0.88);
+      const comma = resized.indexOf(",");
+      pendingAvatar = { base64: resized.slice(comma + 1), type: "image/jpeg" };
+      $("profile-avatar-lg").style.backgroundImage = `url(${resized})`;
+      $("profile-avatar-lg").textContent = "";
+      $("profile-hint").textContent = `${file.name} · resized to ${width}×${height} · ready to save`;
+    };
+    image.onerror = () => toast("That file is not an image this browser can read", true);
+    image.src = data;
   };
   reader.readAsDataURL(file);
 });

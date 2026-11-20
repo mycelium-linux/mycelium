@@ -18,12 +18,12 @@ nothing.
 | **Home** | A quiet launcher: greeting, one-line state, and doors into Pulse, Activity, Files, Spores, Fleet, Vault, Connect and Settings. | the probes below |
 | **Pulse** | The next few things coming up, all pulses in human language, and the checks Mycelium runs on its own. No cron, no run log. | `pulse list --json` (`next_at_ms`) |
 | **Activity** | A human view of the local bus: connected sources, what they publish, where kinds route, and a plain-language event feed. | `~/.config/unibus/hub.json` + a TCP probe + `hub.log` tail |
-| **Files** | A Finder-shaped browser over the content roots: sidebar, list, breadcrumb, and an inline preview for text and images. `Open Files` goes to `files.myc` | `/api/files` over the allowed roots + `mount` |
-| **Spores** | Every installed Spore, separate from content: title, id, version, grants, desktop badge, Open/Copy path, and the Store. | the two Spore install roots |
+| **Files** | A Finder-shaped browser over the content roots: sidebar, list, breadcrumb, inline preview for text and images, and **Reveal in Finder**. `Open Files` goes to `files.myc` | `/api/files` over the allowed roots + `mount` |
+| **Spores** | Every installed Spore, separate from content: its own mark (or badge/colour), one-line description, Open and Reveal, plus the Store. | the two Spore install roots + `[presentation]` |
 | **Fleet** | Search, site filter, sort, freshness dots, SSH coverage, version spread, and a row that opens into addresses/capabilities/identity. | `fleet status --json` joined with `peers --json` |
 | **Vault (Geode)** | Is the local broker live, is its store private, how big is it? | socket probe + `~/.geode` metadata |
-| **Connect** | AI (`ai.myc`/Bifrost key files and reachability), MCP (`mcp.myc` and its configs), Loki logs, the Cloudflare connector, `.myc` hosts, and Spore installs. | route table + config files + TCP probes |
-| **Settings** | Profile (name, POSIX user, picture), dashboard refresh/theme, public relays, the **overlay tunnel**, and (under Advanced) the frontdoor routes. | `profile.json`/`avatar`, `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` |
+| **Connect** | AI (`ai.myc`/Bifrost accounts and named backends, not loopback URLs), MCP (`mcp.myc` and its configs), Loki, the Cloudflare connector, `.myc` hosts, and Spore installs. | the Bifrost TOML + route table + config files + TCP probes |
+| **Settings** | Profile (name, POSIX user, picture), dashboard refresh/theme, public relays, the **overlay tunnel**, and (under Advanced) the frontdoor routes. Controls are bounded where the host has a finite set of choices. | `profile.json`/`avatar`, `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` |
 
 Unibus is a TCP bus with no HTTP admin surface, so the page reports the hub
 it can verify (listener, producers, routes, recent log) rather than inventing
@@ -34,7 +34,10 @@ manifest.
 Geode and the Files browser are deliberately read-only: there is no vault item
 API yet, and the Files browser only reads inside the installed content roots.
 Connect writes exactly one secret today — the Bifrost API key — and only to
-`~/.fpl/bifrost-api-key`. Leasing a secret and mounting a
+`~/.fpl/bifrost-api-key`. It reads the local Bifrost config for the account and
+named backend list, so the page says "This Mac / Agora / Loki / FPL Cloud"
+instead of a loopback URL. `files.myc` still owns CID-addressed browsing; the
+dashboard links to it rather than reimplementing that contract. Leasing a secret and mounting a
 filesystem are operator authority with their own confirmation path; a browser
 form is not that path. The page says so rather than hiding the surface.
 
@@ -54,8 +57,9 @@ holding a frontdoor token. The frontdoor's own bearer-token check runs first.
 | Tunnel restart | `mycelium iroh-tun restart --write` |
 | Public relays | `mycelium sync relays enable|disable --write` |
 | Pulse add/toggle/remove | `mycelium pulse add|toggle|remove … --write` |
-| Profile | writes `~/.mycelium/dashboard/profile.json` (0600) and `avatar` (0600) |
+| Profile | writes `~/.mycelium/dashboard/profile.json` (0600) and `avatar` (0600). Pictures up to 20 MiB are resized in the browser to 512px before upload. |
 | AI key | writes `~/.fpl/bifrost-api-key` (0600) |
+| Reveal | opens a path in Finder (macOS) or the desktop file manager; restricted to the content roots, Spore roots and Mycelium home |
 | Overlay settings | `mycelium iroh-tun config … --write` |
 | Save routes | validates with `FrontdoorConfig` and writes `routes.json` |
 
