@@ -528,6 +528,10 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
             forwarded = forwarded.header(name, value);
         }
         forwarded = forwarded
+            // The upstream routes by the caller's name, not by the loopback
+            // socket the gateway happens to dial. Keep the original authority
+            // and expose it explicitly for services that need to reconstruct it.
+            .header("host", &host)
             .header("x-forwarded-host", &host)
             .header("x-forwarded-proto", state.forwarded_proto);
         // Who called, when the mesh CA vouched for them. This is attached here,
