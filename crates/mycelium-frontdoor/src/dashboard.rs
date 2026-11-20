@@ -95,6 +95,35 @@ pub async fn handle(state: &FrontdoorState, request: Request<Body>) -> Response<
         (Method::PUT, "/api/routes") => put_routes(state, &body).await,
         (Method::PUT, "/api/settings") => put_settings(state, &body).await,
         (Method::PUT, "/api/overlay") => put_overlay(state, &body).await,
+        (Method::GET, "/api/profile") => {
+            json_response(json!({"ok": true, "profile": read_profile()}))
+        }
+        (Method::POST, "/api/profile") => put_profile(&body).await,
+        (Method::GET, "/api/profile/avatar") => serve_avatar(),
+        (Method::GET, "/api/files") => {
+            let root = query_value(&query, "root").unwrap_or_default();
+            let path = query_value(&query, "path").unwrap_or_default();
+            match files_list(&root, &path) {
+                Ok(value) => json_response(json!({"ok": true, "listing": value})),
+                Err(error) => json_response(json!({"ok": false, "error": error})),
+            }
+        }
+        (Method::GET, "/api/files/raw") => {
+            let root = query_value(&query, "root").unwrap_or_default();
+            let path = query_value(&query, "path").unwrap_or_default();
+            match files_raw(&root, &path) {
+                Ok((bytes, kind)) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, kind)
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Body::from(bytes))
+                    .unwrap_or_else(|_| {
+                        api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid response")
+                    }),
+                Err(error) => api_error(StatusCode::NOT_FOUND, &error),
+            }
+        }
+        (Method::POST, "/api/connectors/ai") => put_ai_key(&body).await,
         (Method::POST, "/api/pulse") => pulse_add(state, &body).await,
         (Method::POST, "/api/pulse/toggle") => pulse_toggle(state, &body).await,
         (Method::POST, "/api/pulse/remove") => pulse_remove(state, &body).await,
@@ -271,11 +300,26 @@ async fn summary(state: &FrontdoorState) -> Value {
         "geode": geode.unwrap_or_else(|_| json!({"error": "geode probe failed"})),
         "vfs": vfs.unwrap_or_else(|_| json!({"error": "vfs probe failed"})),
         "unibus": unibus.unwrap_or_else(|_| json!({"error": "unibus probe failed"})),
+        "profile": read_profile(),
+        "connectors": connectors(state),
+        "spores": scan_spores(),
         "frontdoor": {
             "routes": table.total_routes(),
             "derived_routes": table.derived_routes(),
             "auth_required": state.auth_token.is_some(),
             "tls": state.forwarded_proto == "https",
+            // Route name -> its first public host. The Unibus page uses this to
+            // link a producer to the console that owns it, without guessing.
+            "links": table
+                .routes()
+                .iter()
+                .filter_map(|route| {
+                    route
+                        .hosts
+                        .first()
+                        .map(|host| (route.name.clone(), format!("https://{host}/")))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>(),
         },
         "settings": read_settings(),
         "dashboard_hosts": state.dashboard_hosts.read().unwrap().iter().cloned().collect::<Vec<_>>(),
@@ -528,21 +572,18 @@ fn tail_lines(path: &Path, count: usize) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    let lines: Vec<&str> = text.lines().rev().take(count * 4).collect();
+    // Only timestamped lines are bus activity. A startup failure prints a
+    // multi-line `Error:`/`Caused by:` block with no timestamp; showing that in
+    // the feed as three separate items is noise, not history.
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(strip_ansi)
+        .filter(|line| line.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+        .map(|line| line.chars().take(360).collect())
+        .collect();
+    let drop = lines.len().saturating_sub(count);
+    lines.drain(..drop);
     lines
-        .into_iter()
-        .rev()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let clean = strip_ansi(line);
-            clean.chars().take(360).collect::<String>()
-        })
-        .rev()
-        .take(count)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
 }
 
 // ---------------------------------------------------------------- probes
@@ -659,14 +700,19 @@ fn mount_points() -> BTreeSet<PathBuf> {
 }
 
 /// Canvas/desktop Spores: the ones that declare a surface, not every Spore.
-fn desktops() -> Vec<Value> {
+fn spore_roots() -> [PathBuf; 2] {
     let home = home_dir();
-    let roots = [
+    [
         home.join("Library/Application Support/fungOS/spores"),
         home.join(".local/share/fungos/spores"),
-    ];
+    ]
+}
+
+/// Every installed Spore, not only the desktop surfaces. The dashboard shows
+/// these in their own section; Files is about content, not packages.
+fn scan_spores() -> Vec<Value> {
     let mut found: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
-    for root in roots {
+    for root in spore_roots() {
         let Ok(children) = std::fs::read_dir(&root) else {
             continue;
         };
@@ -675,27 +721,101 @@ fn desktops() -> Vec<Value> {
             let Ok(text) = std::fs::read_to_string(&manifest) else {
                 continue;
             };
-            let parsed = parse_spore(&text);
-            let Some(id) = parsed.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            let mut entry = parse_spore(&text);
+            let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_owned) else {
                 continue;
             };
-            let declares_canvas = text.contains("soil:canvas") || text.contains("soil:present");
-            if !declares_canvas {
-                continue;
-            }
-            let mut entry = parsed;
+            let hosts = parse_spore_hosts(&text);
             entry.insert(
                 "path".into(),
                 Value::String(child.path().display().to_string()),
             );
+            entry.insert(
+                "open_url".into(),
+                match hosts.first() {
+                    Some(host) => Value::String(format!("https://{host}/")),
+                    None => Value::Null,
+                },
+            );
+            entry.insert("hosts".into(), json!(hosts));
+            entry.insert(
+                "desktop".into(),
+                json!(text.contains("soil:canvas") || text.contains("soil:present")),
+            );
+            entry.insert("grants".into(), json!(count_grants(&text)));
             found.insert(id, Value::Object(entry));
         }
     }
-    found.into_values().collect()
+    let mut rows: Vec<Value> = found.into_values().collect();
+    rows.sort_by(|left, right| {
+        let key = |value: &Value| {
+            value["title"]
+                .as_str()
+                .or_else(|| value["name"].as_str())
+                .unwrap_or_default()
+                .to_lowercase()
+        };
+        key(left).cmp(&key(right))
+    });
+    rows
 }
 
-/// The four keys the dashboard needs. A Spore manifest is not arbitrary TOML
-/// here; keeping the reader small avoids a second TOML dialect in the frontdoor.
+fn desktops() -> Vec<Value> {
+    scan_spores()
+        .into_iter()
+        .filter(|spore| spore["desktop"].as_bool() == Some(true))
+        .collect()
+}
+
+fn count_grants(text: &str) -> usize {
+    let mut section = String::new();
+    let mut count = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line.trim_matches(['[', ']']).to_owned();
+            continue;
+        }
+        if section == "grants" && line.contains('=') && !line.starts_with('#') {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// The dashboard only needs the first host a Spore declares. A full TOML
+/// dependency is a larger program than this rule.
+fn parse_spore_hosts(text: &str) -> Vec<String> {
+    let mut section = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line.trim_matches(['[', ']']).to_owned();
+            continue;
+        }
+        if section != "http" {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "hosts" {
+            continue;
+        }
+        return value
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|host| host.trim().trim_matches('"').to_owned())
+            .filter(|host| !host.is_empty())
+            .collect();
+    }
+    Vec::new()
+}
+
+/// The keys the dashboard needs. A Spore manifest is not arbitrary TOML here;
+/// keeping the reader small avoids a second TOML dialect in the frontdoor.
 fn parse_spore(text: &str) -> Map<String, Value> {
     let mut section = String::new();
     let mut out = Map::new();
@@ -713,11 +833,445 @@ fn parse_spore(text: &str) -> Map<String, Value> {
         };
         let key = key.trim();
         let value = value.trim().trim_matches('"');
-        if section == "spore" && matches!(key, "id" | "name" | "title" | "summary") {
+        if section == "spore" && matches!(key, "id" | "name" | "title" | "summary" | "version") {
             out.insert(key.to_owned(), Value::String(value.to_owned()));
         }
     }
     out
+}
+
+// ---------------------------------------------------------------- profile
+
+fn posix_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn profile_path() -> PathBuf {
+    mycelium_home().join("dashboard/profile.json")
+}
+
+fn avatar_path() -> PathBuf {
+    mycelium_home().join("dashboard/avatar")
+}
+
+fn read_profile() -> Value {
+    let user = posix_user();
+    let stored = std::fs::read_to_string(profile_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let name = stored
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&user)
+        .to_owned();
+    let avatar_type = std::fs::read_to_string(avatar_path().with_extension("type"))
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    json!({
+        "name": name,
+        "posix_user": user,
+        "has_avatar": avatar_path().is_file(),
+        "avatar_url": if avatar_path().is_file() { "/api/profile/avatar" } else { "" },
+        "avatar_type": avatar_type,
+    })
+}
+
+async fn put_profile(body: &Bytes) -> Response<Body> {
+    let input = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, &error),
+    };
+    let mut stored = json!({});
+    if let Some(name) = input.get("name").and_then(Value::as_str) {
+        let name = name.trim();
+        if name.len() > 80 || name.contains('\n') {
+            return api_error(StatusCode::BAD_REQUEST, "name is invalid");
+        }
+        stored["name"] = json!(name);
+    }
+    let path = profile_path();
+    if let Err(error) = write_private(
+        &path,
+        serde_json::to_vec_pretty(&stored)
+            .unwrap_or_default()
+            .as_slice(),
+    ) {
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error);
+    }
+    if let (Some(encoded), Some(kind)) = (
+        input.get("avatar_base64").and_then(Value::as_str),
+        input.get("avatar_type").and_then(Value::as_str),
+    ) {
+        if !matches!(
+            kind,
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "avatar must be a png, jpeg, webp or gif",
+            );
+        }
+        let Some(bytes) = base64_decode(encoded) else {
+            return api_error(StatusCode::BAD_REQUEST, "avatar is not valid base64");
+        };
+        if bytes.len() > 2 * 1024 * 1024 {
+            return api_error(StatusCode::PAYLOAD_TOO_LARGE, "avatar is larger than 2 MiB");
+        }
+        if let Err(error) = write_private(&avatar_path(), &bytes) {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error);
+        }
+        let _ = write_private(&avatar_path().with_extension("type"), kind.as_bytes());
+    }
+    json_response(json!({"ok": true, "profile": read_profile()}))
+}
+
+fn base64_decode(value: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (index, byte) in TABLE.iter().enumerate() {
+        lookup[*byte as usize] = index as u8;
+    }
+    let mut out = Vec::with_capacity(value.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in value.bytes() {
+        match byte {
+            b'=' => break,
+            b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => {}
+        }
+        let value = lookup[byte as usize];
+        if value == 255 {
+            return None;
+        }
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+fn serve_avatar() -> Response<Body> {
+    let Ok(bytes) = std::fs::read(avatar_path()) else {
+        return api_error(StatusCode::NOT_FOUND, "no avatar");
+    };
+    let kind = std::fs::read_to_string(avatar_path().with_extension("type"))
+        .unwrap_or_else(|_| "image/png".into())
+        .trim()
+        .to_owned();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, kind)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
+}
+
+// ---------------------------------------------------------------- connectors
+
+fn file_note(path: &Path) -> Value {
+    let meta = std::fs::metadata(path).ok();
+    json!({
+        "path": path.display().to_string(),
+        "present": meta.is_some(),
+        "bytes": meta.as_ref().map(|meta| meta.len()).unwrap_or(0),
+        "updated_ms": meta
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0),
+    })
+}
+
+fn running(needle: &str) -> bool {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-Ao", "command"])
+        .output()
+    else {
+        return false;
+    };
+    output.stdout.len() < 2 * 1024 * 1024
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.contains(needle) && !line.contains("ps -Ao"))
+}
+
+fn connectors(state: &FrontdoorState) -> Value {
+    let home = home_dir();
+    let config = config_home();
+    let table = state.table.read().unwrap();
+    let link = |name: &str| {
+        table
+            .routes()
+            .iter()
+            .find(|route| route.name == name)
+            .and_then(|route| route.hosts.first())
+            .map(|host| format!("https://{host}/"))
+    };
+    let upstreams = |name: &str| {
+        table
+            .routes()
+            .iter()
+            .find(|route| route.name == name)
+            .map(|route| route.upstreams.clone())
+            .unwrap_or_default()
+    };
+
+    let ai_keys = [
+        home.join(".fpl/bifrost-api-key"),
+        config.join("fpl/bifrost-api-key"),
+        home.join(".fpl/bifrost-local-key"),
+    ]
+    .map(|path| file_note(&path));
+
+    let mcp_configs: Vec<Value> = std::fs::read_dir(config.join("unibus"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.starts_with("mcp").then(|| {
+                json!({
+                    "name": name,
+                    "path": entry.path().display().to_string(),
+                    "updated_ms": std::fs::metadata(entry.path())
+                        .and_then(|meta| meta.modified())
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_millis() as u64)
+                        .unwrap_or(0),
+                })
+            })
+        })
+        .collect();
+
+    let loki_config = config.join("loki/loki.toml");
+    let cloudflared = running("cloudflared");
+
+    json!({
+        "ai": {
+            "link": link("ai"),
+            "upstreams": upstreams("ai"),
+            "reachable": probe_tcp("127.0.0.1:4000", Duration::from_millis(350)),
+            "keys": ai_keys,
+            "local_config": file_note(&config.join("bifrost-local/bifrost.toml")),
+        },
+        "mcp": {
+            "link": link("mcp"),
+            "upstreams": upstreams("mcp"),
+            "reachable": probe_tcp("127.0.0.1:8000", Duration::from_millis(350)),
+            "configs": mcp_configs,
+        },
+        "logs": {
+            "reachable": probe_tcp("127.0.0.1:4010", Duration::from_millis(350)),
+            "listen": "127.0.0.1:4010",
+            "config": file_note(&loki_config),
+        },
+        "cloudflare": {
+            "running": cloudflared,
+            "installed": std::path::Path::new("/Library/LaunchDaemons/dev.fpl.cloudflared.plist").is_file(),
+            "token": file_note(&mycelium_home().join("managed/cloudflared-tunnel/token")),
+            "command": "mycelium managed apply cloudflared-tunnel --allow-root --write",
+        },
+        "domain": {
+            "hosts": table
+                .routes()
+                .iter()
+                .flat_map(|route| route.hosts.iter().cloned())
+                .filter(|host| host.ends_with(".myc"))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+        },
+    })
+}
+
+async fn put_ai_key(body: &Bytes) -> Response<Body> {
+    let input = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, &error),
+    };
+    let Some(key) = input.get("api_key").and_then(Value::as_str).map(str::trim) else {
+        return api_error(StatusCode::BAD_REQUEST, "api_key is required");
+    };
+    if key.is_empty() || key.len() > 512 || key.contains('\n') {
+        return api_error(StatusCode::BAD_REQUEST, "api_key is invalid");
+    }
+    let path = home_dir().join(".fpl/bifrost-api-key");
+    if let Err(error) = write_private(&path, format!("{key}\n").as_bytes()) {
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error);
+    }
+    json_response(json!({"ok": true, "key": file_note(&path)}))
+}
+
+// ---------------------------------------------------------------- files
+
+fn content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "md" | "txt" | "log" | "toml" | "json" | "yaml" | "yml" | "rs" | "py" | "js" | "ts"
+        | "lua" | "css" | "html" | "sh" | "csv" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+fn is_previewable_text(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str(),
+        "md" | "txt"
+            | "log"
+            | "toml"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "rs"
+            | "py"
+            | "js"
+            | "ts"
+            | "lua"
+            | "css"
+            | "html"
+            | "sh"
+            | "csv"
+    )
+}
+
+fn resolve_under_root(root: &str, rel: &str) -> Result<(PathBuf, PathBuf), String> {
+    let canonical_root = std::fs::canonicalize(root).map_err(|error| format!("root: {error}"))?;
+    let allowed = allowed_roots();
+    if !allowed.iter().any(|path| {
+        std::fs::canonicalize(path)
+            .map(|candidate| candidate == canonical_root)
+            .unwrap_or(false)
+    }) {
+        return Err("root is not a known content root".into());
+    }
+    let rel = rel.trim_start_matches('/');
+    if rel.split('/').any(|part| part == "..") {
+        return Err("path escapes the root".into());
+    }
+    let target = canonical_root.join(rel);
+    let canonical = std::fs::canonicalize(&target).map_err(|error| format!("path: {error}"))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err("path escapes the root".into());
+    }
+    Ok((canonical_root, canonical))
+}
+
+fn allowed_roots() -> [PathBuf; 3] {
+    let home = home_dir();
+    [
+        home.join(".local/share/fungos/vfs"),
+        home.join("fungOS"),
+        home.join("fungos-node"),
+    ]
+}
+
+fn files_list(root: &str, rel: &str) -> Result<Value, String> {
+    let (base, target) = resolve_under_root(root, rel)?;
+    if target.is_file() {
+        let meta = std::fs::metadata(&target).map_err(|error| error.to_string())?;
+        let mut preview = None;
+        if is_previewable_text(&target) && meta.len() <= 512 * 1024 {
+            let bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
+            preview =
+                Some(String::from_utf8_lossy(&bytes[..bytes.len().min(16 * 1024)]).to_string());
+        }
+        return Ok(json!({
+            "root": base.display().to_string(),
+            "path": rel,
+            "file": {
+                "name": target.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
+                "size": meta.len(),
+                "modified_ms": meta.modified().ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0),
+                "mime": content_type(&target),
+                "preview": preview,
+            },
+        }));
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&target)
+        .map_err(|error| error.to_string())?
+        .flatten()
+    {
+        let metadata = entry.metadata().ok();
+        entries.push(json!({
+            "name": entry.file_name().to_string_lossy(),
+            "dir": entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false),
+            "size": metadata.as_ref().map(|meta| meta.len()).unwrap_or(0),
+            "modified_ms": metadata
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0),
+            "mime": if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                "inode/directory".to_string()
+            } else {
+                content_type(&entry.path()).to_string()
+            },
+        }));
+    }
+    entries.sort_by(|left, right| {
+        right["dir"]
+            .as_bool()
+            .cmp(&left["dir"].as_bool())
+            .then_with(|| {
+                left["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .cmp(&right["name"].as_str().unwrap_or("").to_lowercase())
+            })
+    });
+    Ok(json!({
+        "root": base.display().to_string(),
+        "path": rel,
+        "entries": entries,
+    }))
+}
+
+fn files_raw(root: &str, rel: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let (_, target) = resolve_under_root(root, rel)?;
+    let meta = std::fs::metadata(&target).map_err(|error| error.to_string())?;
+    if !target.is_file() {
+        return Err("not a file".into());
+    }
+    if meta.len() > 8 * 1024 * 1024 {
+        return Err("file is larger than 8 MiB".into());
+    }
+    Ok((
+        std::fs::read(&target).map_err(|error| error.to_string())?,
+        content_type(&target),
+    ))
 }
 
 // ---------------------------------------------------------------- settings
