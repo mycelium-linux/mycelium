@@ -79,7 +79,7 @@ pub fn run(args: &[String]) -> Result<Vec<String>, String> {
                 .create_new(true)
                 .open(&path)
                 .map_err(|e| e.to_string())?;
-            file.write_all(b"{\"public_relays\":false,\"seeds\":[]}\n")
+            file.write_all(b"{\"public_relays\":false,\"direct_first\":true,\"seeds\":[]}\n")
                 .map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
             Ok(vec!["Iroh enabled; run 'mycelium setup --repair' so MYCELIUM_IROH_SERVER_NAME is recorded from the certificate, then restart myceliumd".into()])
