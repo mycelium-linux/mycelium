@@ -15,16 +15,26 @@ nothing.
 | Section | What it answers | How it reads |
 |---|---|---|
 | **Overview** | Is the daemon up, is the overlay up, are the frontdoor and peers healthy? | `node status`, `fleet status`, `iroh-tun status`, internal frontdoor state |
-| **Fleet members** | Who is enrolled, where, how fresh, what version, is SSH listening? Search by host/site/node, filter by site, sort, and open a row for addresses, capabilities and identity. | `fleet status --json` joined with `peers --json` |
-| **Unibus** | Is the local bus up, which producers are configured, what they publish, where kinds route, and the recent hub log? | `~/.config/unibus/hub.json` + a TCP probe + `hub.log` tail |
-| **Geode** | Is the owner-local broker live, is its store private, how big is it? | socket probe + `~/.geode` metadata |
-| **Desktops & VFS** | Which content roots exist and are mounted; which Canvas surfaces are installed; one click to the Files app (`files.myc`). | `mount` + the Spore install roots |
-| **Pulse** | Which schedules the daemon owns, and what they last did. | `pulse list`, `pulse runs` |
-| **Settings** | Dashboard refresh/theme, public relays, the **overlay tunnel** (`iroh-tun`), and the frontdoor route table. | `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` + `sync relays` / `iroh-tun config --write` |
+| **Home** | A quiet launcher: greeting, one-line state, and doors into Pulse, Activity, Files, Spores, Fleet, Vault, Connect and Settings. | the probes below |
+| **Pulse** | The next few things coming up, all pulses in human language, and the checks Mycelium runs on its own. No cron, no run log. | `pulse list --json` (`next_at_ms`) |
+| **Activity** | A human view of the local bus: connected sources, what they publish, where kinds route, and a plain-language event feed. | `~/.config/unibus/hub.json` + a TCP probe + `hub.log` tail |
+| **Files** | A Finder-shaped browser over the content roots: sidebar, list, breadcrumb, and an inline preview for text and images. `Open Files` goes to `files.myc` | `/api/files` over the allowed roots + `mount` |
+| **Spores** | Every installed Spore, separate from content: title, id, version, grants, desktop badge, Open/Copy path, and the Store. | the two Spore install roots |
+| **Fleet** | Search, site filter, sort, freshness dots, SSH coverage, version spread, and a row that opens into addresses/capabilities/identity. | `fleet status --json` joined with `peers --json` |
+| **Vault (Geode)** | Is the local broker live, is its store private, how big is it? | socket probe + `~/.geode` metadata |
+| **Connect** | AI (`ai.myc`/Bifrost key files and reachability), MCP (`mcp.myc` and its configs), Loki logs, the Cloudflare connector, `.myc` hosts, and Spore installs. | route table + config files + TCP probes |
+| **Settings** | Profile (name, POSIX user, picture), dashboard refresh/theme, public relays, the **overlay tunnel**, and (under Advanced) the frontdoor routes. | `profile.json`/`avatar`, `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` |
 
 Unibus is a TCP bus with no HTTP admin surface, so the page reports the hub
 it can verify (listener, producers, routes, recent log) rather than inventing
-one. Geode and VFS are deliberately read-only here. Leasing a secret and mounting a
+one. A richer, message-level firehose belongs in a Spore that consumes the bus
+with its own grants; the per-kind templates for that belong in the Spore
+manifest.
+
+Geode and the Files browser are deliberately read-only: there is no vault item
+API yet, and the Files browser only reads inside the installed content roots.
+Connect writes exactly one secret today — the Bifrost API key — and only to
+`~/.fpl/bifrost-api-key`. Leasing a secret and mounting a
 filesystem are operator authority with their own confirmation path; a browser
 form is not that path. The page says so rather than hiding the surface.
 
@@ -44,6 +54,8 @@ holding a frontdoor token. The frontdoor's own bearer-token check runs first.
 | Tunnel restart | `mycelium iroh-tun restart --write` |
 | Public relays | `mycelium sync relays enable|disable --write` |
 | Pulse add/toggle/remove | `mycelium pulse add|toggle|remove … --write` |
+| Profile | writes `~/.mycelium/dashboard/profile.json` (0600) and `avatar` (0600) |
+| AI key | writes `~/.fpl/bifrost-api-key` (0600) |
 | Overlay settings | `mycelium iroh-tun config … --write` |
 | Save routes | validates with `FrontdoorConfig` and writes `routes.json` |
 

@@ -36,10 +36,16 @@ struct StatusPanel: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            Circle()
-                .fill(model.statusColor)
-                .frame(width: 9, height: 9)
-                .padding(.top, 2)
+            if let logo = NSImage(named: "Logo") {
+                Image(nsImage: logo)
+                    .resizable()
+                    .frame(width: 26, height: 26)
+            } else {
+                Circle()
+                    .fill(model.statusColor)
+                    .frame(width: 9, height: 9)
+                    .padding(.top, 2)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.hostname)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
