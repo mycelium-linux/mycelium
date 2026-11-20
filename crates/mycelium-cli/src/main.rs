@@ -991,6 +991,8 @@ async fn fleet(args: &[String]) -> Result<Vec<String>, ClientError> {
                         "ssh_listening": health["ssh_listening"],
                         "power": health["power"],
                         "pressure_memory": health["platform_metrics"]["pressure_memory"],
+                        "network_rx_bytes": health["platform_metrics"]["network_rx_bytes"],
+                        "network_tx_bytes": health["platform_metrics"]["network_tx_bytes"],
                         "top_process": health["process_leaders"][0]["name"],
                     })
                 })

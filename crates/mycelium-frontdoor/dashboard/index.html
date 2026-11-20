@@ -526,8 +526,8 @@ details.advanced .body{padding:0 0 18px}
       <div class="quiet-strip" id="fleet-health" style="margin:0 0 14px;padding:0;border:0"></div>
       <div class="sitegrid" id="fleet-sites"></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Host</th><th>Site</th><th>Load</th><th>Memory</th><th>Disk</th><th>Uptime</th><th>SSH</th><th></th></tr></thead>
-        <tbody id="fleet-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+        <thead><tr><th>Host</th><th>Site</th><th>Load</th><th>Memory</th><th>Disk</th><th>Net</th><th>Uptime</th><th>SSH</th><th></th></tr></thead>
+        <tbody id="fleet-body"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
       </table></div>
     </section>
 
@@ -711,6 +711,7 @@ let timer = null;
 let activeTab = "home";
 let lastRefreshMs = 0;
 const fleet = { query: "", site: "", sort: "seen", expanded: "" };
+const bandwidth = new Map();
 
 function toast(message, bad = false) {
   const box = document.createElement("div");
@@ -1133,6 +1134,20 @@ function pressureAvg(peer, kind) {
   return match ? Number(match[1]) : null;
 }
 
+function bandwidthRate(peer) {
+  const id = String(peer.node_id || peer.hostname || "");
+  const rx = Number(peer.network_rx_bytes);
+  const tx = Number(peer.network_tx_bytes);
+  if (!id || !Number.isFinite(rx) || !Number.isFinite(tx)) return null;
+  const now = Date.now();
+  const previous = bandwidth.get(id);
+  bandwidth.set(id, { rx, tx, at: now });
+  if (!previous || now - previous.at < 1000) return null;
+  if (rx < previous.rx || tx < previous.tx) return null;
+  const seconds = (now - previous.at) / 1000;
+  return { rx: (rx - previous.rx) / seconds, tx: (tx - previous.tx) / seconds };
+}
+
 function ratioClass(value) {
   if (value === null || value === undefined) return "";
   return value > 0.92 ? "bad" : value > 0.8 ? "warn" : "";
@@ -1457,7 +1472,8 @@ function renderFleet() {
     const disk = diskRatio(peer);
     const load = Number(peer.load_average?.[0]);
     const pressure = pressureAvg(peer, "memory");
-    const detail = open ? `<tr class="detail"><td colspan="8"><div class="detail">
+    const net = bandwidthRate(peer);
+    const detail = open ? `<tr class="detail"><td colspan="9"><div class="detail">
         <div class="detail-inner">
           <div><h4>Identity</h4><div class="mono">${esc(peer.node_id || "—")}</div>
             <div class="mono dim">${esc(peer.daemon_version || "?")} · ${esc(peer.platform || "?")}/${esc(peer.architecture || "?")}</div>
@@ -1465,6 +1481,7 @@ function renderFleet() {
             <button class="btn small" data-copy="${esc(sshCommand(peer))}">Copy SSH</button></div></div>
           <div><h4>Memory & power</h4>
             <div class="mono">${esc(percent(mem))} used · ${esc(bytes(peer.memory_total_bytes))}</div>
+            <div class="mono">network ${net ? `↓${esc(bytes(net.rx))}/s ↑${esc(bytes(net.tx))}/s` : "waiting for a second sample"}</div>
             <div class="mono">swap ${esc(bytes(peer.swap_total_bytes))} · power ${esc(peer.power || "unknown")}</div>
             <div class="mono">pressure ${esc(Math.round(pressure || 0))}% · ${esc(peer.link || "link unknown")}</div></div>
           <div><h4>Storage</h4>
@@ -1482,11 +1499,12 @@ function renderFleet() {
       <td class="fleet-metric">${Number.isFinite(load) ? load.toFixed(2) : "—"}<div class="dim">${esc(peer.logical_cpus || "?")} cpu</div></td>
       <td class="fleet-metric">${esc(percent(mem))}<div class="dim">${esc(bytes(peer.memory_total_bytes))}</div></td>
       <td class="fleet-metric">${esc(percent(disk))}<div class="dim">${esc(bytes(diskTotals(peer).total))}</div></td>
+      <td class="fleet-metric">${net ? `↓${esc(bytes(net.rx))}/s<div class="dim">↑${esc(bytes(net.tx))}/s</div>` : "—"}</td>
       <td class="fleet-metric">${esc(uptimeText(peer.uptime_seconds))}</td>
       <td>${peer.ssh_listening === true ? '<span class="tag on">listening</span>' : peer.ssh_listening === false ? '<span class="tag off">closed</span>' : '<span class="tag">unknown</span>'}</td>
       <td class="dim">${open ? "▲" : "▼"}</td>
     </tr>${detail}`;
-  }).join("") : '<tr><td colspan="8" class="empty">No machine matches this filter.</td></tr>';
+  }).join("") : '<tr><td colspan="9" class="empty">No machine matches this filter.</td></tr>';
 }
 
 /* ---------- settings ---------- */

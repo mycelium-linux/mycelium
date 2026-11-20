@@ -395,6 +395,8 @@ fn decorate_fleet(
                     "memory": peer["health"]["platform_metrics"]["pressure_memory"],
                     "io": peer["health"]["platform_metrics"]["pressure_io"],
                 }),
+                "network_rx_bytes": peer["health"]["platform_metrics"]["network_rx_bytes"],
+                "network_tx_bytes": peer["health"]["platform_metrics"]["network_tx_bytes"],
                 "process_leaders": Value::Array(
                     peer["health"]["process_leaders"]
                         .as_array()

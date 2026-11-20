@@ -33,6 +33,8 @@ SSH listener.
   "ssh_listening": true,
   "power": "unknown",
   "pressure_memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+  "network_rx_bytes": "1301186187707",
+  "network_tx_bytes": "1301186187707",
   "top_process": "mycelium"
 }
 ```
@@ -47,9 +49,11 @@ SSH listener.
   count; compare within a host or read `logical_cpus` from `--json`.
 - **Pressure** is the Linux PSI `avg10` value when present. It is the earliest
   warning that a host is short on CPU, memory or IO.
-- **Bandwidth** is not in the peer health contract yet. Adding interface byte
-  counters means every peer must run the newer daemon before the column is
-  honest, so it is deliberately absent rather than faked from a loopback URL.
+- **Bandwidth** uses cumulative non-loopback interface counters
+  (`network_rx_bytes`/`network_tx_bytes`) from the peer health. The dashboard
+  computes a rate from two observations, so the first refresh after a reload
+  shows `—` and the next one shows bytes/second. Older peers do not report the
+  counters until they run a daemon that includes them.
 
 ## Sites
 
