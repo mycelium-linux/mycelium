@@ -148,6 +148,14 @@ h3{margin:0;font:600 13px/1.3 ui-sans-serif,sans-serif}
 .kv .k2{color:var(--dim)}
 .kv .v2{font-family:var(--mono);font-size:11px;word-break:break-all}
 
+/* keys */
+.keycard{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-bottom:10px;flex-wrap:wrap}
+.keylogo{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}
+.keybody{flex:1;min-width:0}
+.keyname{font-weight:600;font-size:13px}
+.keysrc{color:var(--muted);font-size:11px;margin-top:1px}
+.keycard details{width:100%}
+.keycard .actions{margin-top:8px}
 /* fleet/files/settings */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
 .toolbar input[type="search"]{max-width:260px}
@@ -277,6 +285,19 @@ details.advanced .body{padding:0 0 18px}
 .conn-details summary::-webkit-details-marker{display:none}
 .conn-details summary::before{content:"›";margin-right:6px;display:inline-block}
 .conn-details[open] summary::before{transform:rotate(90deg)}
+
+/* sites + fleettop */
+.sitegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+.site{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+.site .sn{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.site .sname{font-weight:600;font-size:13.5px}
+.site .smeta{color:var(--dim);font-size:11px;margin-top:2px}
+.meter{height:5px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:8px}
+.meter span{display:block;height:100%;border-radius:999px;background:var(--accent-2)}
+.meter span.warn{background:var(--warn)}
+.meter span.bad{background:var(--bad)}
+.site .mrow{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-top:8px}
+.fleet-metric{font-family:var(--mono);font-size:11px}
 
 @media(max-width:760px){
   .shell{grid-template-columns:1fr}
@@ -495,14 +516,18 @@ details.advanced .body{padding:0 0 18px}
           <option value="seen">Most recently seen</option>
           <option value="name">Hostname</option>
           <option value="site">Site</option>
-          <option value="version">Daemon version</option>
+          <option value="memory">Memory use</option>
+          <option value="disk">Disk use</option>
+          <option value="load">Load</option>
+          <option value="uptime">Uptime</option>
         </select>
         <span class="hint" id="fleet-meta"></span>
       </div>
       <div class="quiet-strip" id="fleet-health" style="margin:0 0 14px;padding:0;border:0"></div>
+      <div class="sitegrid" id="fleet-sites"></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Host</th><th>Site</th><th>Last seen</th><th>Daemon</th><th>SSH</th><th></th></tr></thead>
-        <tbody id="fleet-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        <thead><tr><th>Host</th><th>Site</th><th>Load</th><th>Memory</th><th>Disk</th><th>Uptime</th><th>SSH</th><th></th></tr></thead>
+        <tbody id="fleet-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
       </table></div>
     </section>
 
@@ -1066,6 +1091,63 @@ function renderConnectors() {
 }
 
 /* ---------- fleet ---------- */
+function ratio(used, total) {
+  if (!total) return null;
+  return Math.max(0, Math.min(1, used / total));
+}
+
+function memoryRatio(peer) {
+  if (!peer.memory_total_bytes) return null;
+  return ratio(peer.memory_total_bytes - (peer.memory_available_bytes || 0), peer.memory_total_bytes);
+}
+
+function diskTotals(peer) {
+  const filesystems = list(peer.filesystems);
+  const total = filesystems.reduce((sum, fs) => sum + (Number(fs.total_bytes) || 0), 0);
+  const available = filesystems.reduce((sum, fs) => sum + (Number(fs.available_bytes) || 0), 0);
+  return { total, available, used: Math.max(0, total - available) };
+}
+
+function diskRatio(peer) {
+  const { total, used } = diskTotals(peer);
+  return ratio(used, total);
+}
+
+function percent(value) {
+  return value === null || value === undefined ? "—" : `${Math.round(value * 100)}%`;
+}
+
+function uptimeText(seconds) {
+  const value = Number(seconds) || 0;
+  if (!value) return "—";
+  const days = Math.floor(value / 86400);
+  const hours = Math.floor((value % 86400) / 3600);
+  if (days > 0) return `${days}d ${hours}h`;
+  const minutes = Math.floor((value % 3600) / 60);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function pressureAvg(peer, kind) {
+  const text = peer.pressure?.[kind];
+  const match = String(text || "").match(/avg10=([\d.]+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function ratioClass(value) {
+  if (value === null || value === undefined) return "";
+  return value > 0.92 ? "bad" : value > 0.8 ? "warn" : "";
+}
+
+function siteGroups() {
+  const groups = new Map();
+  for (const peer of fleetRows()) {
+    const site = peer.site || "unassigned";
+    if (!groups.has(site)) groups.set(site, []);
+    groups.get(site).push(peer);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
 function fleetView() {
   const rows = fleetRows();
   const sites = [...new Set(rows.map((r) => r.site).filter(Boolean))].sort();
@@ -1083,12 +1165,45 @@ function fleetView() {
     .sort((a, b) => {
       if (fleet.sort === "name") return String(a.hostname || "").localeCompare(String(b.hostname || ""));
       if (fleet.sort === "site") return String(a.site || "").localeCompare(String(b.site || "")) || String(a.hostname || "").localeCompare(String(b.hostname || ""));
-      if (fleet.sort === "version") return String(b.daemon_version || "").localeCompare(String(a.daemon_version || ""));
+      if (fleet.sort === "memory") return (memoryRatio(b) ?? -1) - (memoryRatio(a) ?? -1);
+      if (fleet.sort === "disk") return (diskRatio(b) ?? -1) - (diskRatio(a) ?? -1);
+      if (fleet.sort === "load") return (Number(b.load_average?.[0]) || 0) - (Number(a.load_average?.[0]) || 0);
+      if (fleet.sort === "uptime") return (Number(b.uptime_seconds) || 0) - (Number(a.uptime_seconds) || 0);
       return (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
     });
 }
 
 function sshCommand(peer) { return `mycelium ssh ${peer.hostname || peer.node_id || ""}`.trim(); }
+
+function renderFleetSites() {
+  const groups = siteGroups();
+  $("fleet-sites").innerHTML = groups.map(([site, peers]) => {
+    const online = peers.filter((peer) => fresh(peer.last_seen)).length;
+    const memory = peers.reduce((acc, peer) => {
+      if (!peer.memory_total_bytes) return acc;
+      acc.total += Number(peer.memory_total_bytes) || 0;
+      acc.used += Math.max(0, (Number(peer.memory_total_bytes) || 0) - (Number(peer.memory_available_bytes) || 0));
+      return acc;
+    }, { total: 0, used: 0 });
+    const disk = peers.reduce((acc, peer) => {
+      const totals = diskTotals(peer);
+      acc.total += totals.total;
+      acc.used += totals.used;
+      return acc;
+    }, { total: 0, used: 0 });
+    const memoryUsed = ratio(memory.used, memory.total);
+    const diskUsed = ratio(disk.used, disk.total);
+    const versions = [...new Set(peers.map((peer) => peer.daemon_version).filter(Boolean))].sort();
+    return `<div class="site">
+      <div class="sn"><span class="sname">${esc(site)}</span><span class="tag ${online === peers.length ? "on" : ""}">${online}/${peers.length} online</span></div>
+      <div class="smeta">${versions.length ? esc(versions.join(" · ")) : "no version"} · ${peers.filter((peer) => peer.ssh_listening === true).length} SSH</div>
+      <div class="mrow"><span>Memory ${percent(memoryUsed)}</span><span>${esc(bytes(memory.used))} / ${esc(bytes(memory.total))}</span></div>
+      <div class="meter"><span class="${ratioClass(memoryUsed)}" style="width:${Math.round((memoryUsed || 0) * 100)}%"></span></div>
+      <div class="mrow"><span>Disk ${percent(diskUsed)}</span><span>${esc(bytes(disk.used))} / ${esc(bytes(disk.total))}</span></div>
+      <div class="meter"><span class="${ratioClass(diskUsed)}" style="width:${Math.round((diskUsed || 0) * 100)}%"></span></div>
+    </div>`;
+  }).join("") || '<div class="empty">No sites reported.</div>';
+}
 
 const SYSTEM_NAMES = {
   "system.ssh-renewal-issuer": "Answer SSH renewal requests",
@@ -1266,12 +1381,38 @@ function renderUnibus() {
 }
 
 /* ---------- geode ---------- */
+function keyLogo(key) {
+  return `<span class="keylogo" style="background:${key.color || "#c9b3ff"}22;color:${key.color || "#c9b3ff"}">${esc(key.badge || "?")}</span>`;
+}
+
 function renderGeode() {
   const g = geodeInfo();
+  const keys = list(summary?.keymap);
+  const ready = keys.filter((key) => key.present).length;
   const state = g.running ? "Vault ready" : "Broker offline";
   const sub = g.running
     ? `Encrypted store · ${bytes(g.store_bytes)}${g.key_private ? " · key private" : ""}`
     : "Start geoded to unlock the store for this machine.";
+  const keyCards = keys.length ? keys.map((key) => {
+    let details = "";
+    if (key.action === "ai") {
+      details = `<details class="conn-details"><summary>Replace key</summary>
+        <div class="field" style="margin-top:8px"><label>${esc(key.name)}</label><input id="vault-ai-key" type="password" placeholder="sk-…" autocomplete="off"></div>
+        <div class="actions"><button class="btn primary small" id="vault-ai-save">Save key</button></div></details>`;
+    } else if (key.action === "cloudflare") {
+      details = `<details class="conn-details"><summary>Replace token</summary>
+        <div class="field" style="margin-top:8px"><label>Cloudflare tunnel token</label><input id="vault-cf-token" type="password" placeholder="eyJ…" autocomplete="off"></div>
+        <div class="actions"><button class="btn primary small" id="vault-cf-save">Save token</button></div></details>`;
+    }
+    return `<div class="keycard">
+      ${keyLogo(key)}
+      <div class="keybody"><div class="keyname">${esc(key.name)}</div><div class="keysrc">${esc(key.provider)} · ${esc(key.source)}</div></div>
+      <span class="tag ${key.present ? "on" : "off"}">${key.present ? "ready" : "missing"}</span>
+      ${key.path ? `<button class="btn small" data-reveal="${esc(key.path)}">Reveal</button>` : ""}
+      ${details}
+    </div>`;
+  }).join("") : '<div class="empty">No keys discovered.</div>';
+
   $("geode-panel").innerHTML = `
     <div class="vault">
       <div class="lock">${icon("vault")}</div>
@@ -1279,19 +1420,21 @@ function renderGeode() {
         <div class="state">${esc(state)}</div>
         <div class="sub">${esc(sub)}</div>
       </div>
-      ${g.running ? '<span class="tag on">available</span>' : '<span class="tag off">offline</span>'}
+      <span class="tag ${g.running ? "on" : "off"}">${g.running ? "available" : "offline"}</span>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:14px">
       <div class="k">This vault</div>
       <div class="kv"><span class="k2">Store</span><span class="v2">${esc(g.store || "—")}</span></div>
       <div class="kv"><span class="k2">Socket</span><span class="v2">${esc(g.socket || "—")}</span></div>
       <div class="kv"><span class="k2">Key</span><span class="v2">${g.key_present ? (g.key_private ? "present, 0600" : "present, wrong mode") : "missing"}</span></div>
-      <p class="hint">A vault browser (items, search, copy, add) needs the Geode item API. Today the broker leases one secret per authenticated caller; this page reports the vault without putting secrets behind a browser form.</p>
-    </div>`;
+      <p class="hint">The broker leases one secret per authenticated caller. Item browsing needs a Geode item API; this page maps the keys the host already owns and lets you rotate the ones with a safe write path.</p>
+    </div>
+    <div class="head" style="margin-bottom:10px"><div class="titles"><h3>API keys</h3><p class="lede">${ready} of ${keys.length} ready. Logos are provider marks; values never leave their host file.</p></div></div>
+    ${keyCards}`;
 }
 
-/* ---------- files ---------- */
 function renderFleet() {
+  renderFleetSites();
   const all = fleetRows();
   const online = all.filter((peer) => fresh(peer.last_seen)).length;
   const ssh = all.filter((peer) => peer.ssh_listening === true).length;
@@ -1303,33 +1446,47 @@ function renderFleet() {
     `<span><span class="dot ${stale ? "warn" : "ok"}"></span>${stale} stale</span>`,
     `<span>${versions.length ? esc(versions.join(" · ")) : "no versions"}</span>`,
   ].join("");
+
   const rows = fleetView();
   $("fleet-meta").textContent = `${rows.length} of ${all.length}`;
   $("fleet-body").innerHTML = rows.length ? rows.map((peer) => {
     const id = String(peer.node_id || peer.hostname || "");
     const open = fleet.expanded === id;
     const status = fresh(peer.last_seen) ? "ok" : (peer.last_seen ? "warn" : "");
-    const detail = open ? `<tr class="detail"><td colspan="6"><div class="detail">
+    const mem = memoryRatio(peer);
+    const disk = diskRatio(peer);
+    const load = Number(peer.load_average?.[0]);
+    const pressure = pressureAvg(peer, "memory");
+    const detail = open ? `<tr class="detail"><td colspan="8"><div class="detail">
         <div class="detail-inner">
           <div><h4>Identity</h4><div class="mono">${esc(peer.node_id || "—")}</div>
+            <div class="mono dim">${esc(peer.daemon_version || "?")} · ${esc(peer.platform || "?")}/${esc(peer.architecture || "?")}</div>
             <div class="actions"><button class="btn small" data-copy="${esc(peer.node_id || "")}">Copy node id</button>
             <button class="btn small" data-copy="${esc(sshCommand(peer))}">Copy SSH</button></div></div>
+          <div><h4>Memory & power</h4>
+            <div class="mono">${esc(percent(mem))} used · ${esc(bytes(peer.memory_total_bytes))}</div>
+            <div class="mono">swap ${esc(bytes(peer.swap_total_bytes))} · power ${esc(peer.power || "unknown")}</div>
+            <div class="mono">pressure ${esc(Math.round(pressure || 0))}% · ${esc(peer.link || "link unknown")}</div></div>
+          <div><h4>Storage</h4>
+            ${list(peer.filesystems).map((fs) => `<div class="mono">${esc(fs.mount)} · ${esc(bytes(fs.total_bytes))} · ${esc(bytes(fs.available_bytes))} free</div>`).join("") || '<span class="dim">No filesystem report.</span>'}</div>
+          <div><h4>Top process</h4>
+            ${list(peer.process_leaders).slice(0, 1).map((proc) => `<div class="mono">${esc(proc.name)} · ${esc(proc.cpu_percent)}% CPU · ${esc(proc.memory_percent)}% MEM</div>`).join("") || '<span class="dim">No process report.</span>'}
+            <div class="mono">${esc(peer.established_ssh_sessions || 0)} SSH sessions</div></div>
           <div><h4>Addresses</h4>${list(peer.addresses).length ? list(peer.addresses).map((a) => `<span class="chip">${esc(a)}</span>`).join("") : '<span class="dim">None advertised.</span>'}</div>
           <div><h4>Capabilities</h4>${list(peer.capabilities).length ? list(peer.capabilities).map((c) => `<span class="chip">${esc(c)}</span>`).join("") : '<span class="dim">None advertised.</span>'}</div>
-          <div><h4>Health</h4><div class="mono">platform ${esc(text(peer.platform))} / ${esc(text(peer.architecture))}</div>
-            <div class="mono">load ${esc(text(list(peer.load_average).join(", ")))}</div>
-            <div class="mono">transports ${esc(text(peer.transports))}</div></div>
         </div></div></td></tr>` : "";
     return `<tr class="clickable ${open ? "open" : ""}" data-node="${esc(id)}">
       <td><span class="dot ${status}" style="margin-right:7px"></span><strong>${esc(peer.hostname || "unknown")}</strong>
-        <div class="mono dim">${esc(short(peer.node_id, 16))}</div></td>
+        <div class="mono dim">${esc(ago(peer.last_seen))} · ${esc(short(peer.node_id, 12))}</div></td>
       <td>${esc(peer.site || "—")}</td>
-      <td>${esc(ago(peer.last_seen))}</td>
-      <td class="mono">${esc(peer.daemon_version || "?")}</td>
+      <td class="fleet-metric">${Number.isFinite(load) ? load.toFixed(2) : "—"}<div class="dim">${esc(peer.logical_cpus || "?")} cpu</div></td>
+      <td class="fleet-metric">${esc(percent(mem))}<div class="dim">${esc(bytes(peer.memory_total_bytes))}</div></td>
+      <td class="fleet-metric">${esc(percent(disk))}<div class="dim">${esc(bytes(diskTotals(peer).total))}</div></td>
+      <td class="fleet-metric">${esc(uptimeText(peer.uptime_seconds))}</td>
       <td>${peer.ssh_listening === true ? '<span class="tag on">listening</span>' : peer.ssh_listening === false ? '<span class="tag off">closed</span>' : '<span class="tag">unknown</span>'}</td>
       <td class="dim">${open ? "▲" : "▼"}</td>
     </tr>${detail}`;
-  }).join("") : '<tr><td colspan="6" class="empty">No machine matches this filter.</td></tr>';
+  }).join("") : '<tr><td colspan="8" class="empty">No machine matches this filter.</td></tr>';
 }
 
 /* ---------- settings ---------- */
@@ -1465,6 +1622,30 @@ document.addEventListener("click", async (event) => {
       if (value?.ok === false) throw new Error(value.error);
       $("ai-key").value = "";
       toast("AI key saved");
+      await load({ silent: true });
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
+  if (event.target.closest("#vault-ai-save")) {
+    const key = $("vault-ai-key")?.value?.trim();
+    if (!key) return toast("paste an API key first", true);
+    try {
+      const value = await api("/api/connectors/ai", { method: "POST", body: JSON.stringify({ api_key: key }) });
+      if (value?.ok === false) throw new Error(value.error);
+      $("vault-ai-key").value = "";
+      toast("API key saved");
+      await load({ silent: true });
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
+  if (event.target.closest("#vault-cf-save")) {
+    const token = $("vault-cf-token")?.value?.trim();
+    if (!token) return toast("paste a tunnel token first", true);
+    try {
+      const value = await api("/api/keys/cloudflare", { method: "POST", body: JSON.stringify({ token }) });
+      if (value?.ok === false) throw new Error(value.error);
+      $("vault-cf-token").value = "";
+      toast("Cloudflare token saved");
       await load({ silent: true });
     } catch (error) { toast(error.message, true); }
     return;
@@ -1650,6 +1831,7 @@ $("profile-save").addEventListener("click", async () => {
   } catch (error) { toast(error.message, true); }
 });
 
+window.scrollTo({ top: 0, behavior: "instant" });
 load();
 </script>
 </body>

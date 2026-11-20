@@ -204,7 +204,24 @@ final class MyceliumModel: ObservableObject {
     private func applySelfCheck(_ result: CommandResult) {
         let text = result.stdout
         syncEnabled = text.contains("iroh-sync=true")
-        if !syncEnabled { publicRelays = false }
+        if !syncEnabled {
+            publicRelays = false
+            return
+        }
+        // The feature can be compiled in while the config says relays are off.
+        // Read the same file the daemon follows instead of guessing from the
+        // build flag: that is what made the panel disagree with Settings.
+        let home = ProcessInfo.processInfo.environment["MYCELIUM_HOME"]
+            .map(URL.init(fileURLWithPath:))
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mycelium")
+        let path = home.appendingPathComponent("iroh-sync.json")
+        guard let data = try? Data(contentsOf: path),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        if let relays = value["public_relays"] as? Bool {
+            publicRelays = relays
+        }
     }
 
     // MARK: - Writes
@@ -227,8 +244,14 @@ final class MyceliumModel: ObservableObject {
 
     func togglePublicRelays() {
         let enable = !publicRelays
+        // Optimistic: a Toggle that snaps back while the command runs reads as
+        // a broken control. The refresh below reconciles with the file.
+        publicRelays = enable
         perform(busyLabel: enable ? "Enabling relays…" : "Disabling relays…") {
-            _ = await MyceliumCLI.run(["sync", "relays", enable ? "enable" : "disable", "--write"])
+            let result = await MyceliumCLI.run(["sync", "relays", enable ? "enable" : "disable", "--write"])
+            if !result.ok {
+                await MainActor.run { self.publicRelays = !enable }
+            }
         }
     }
 

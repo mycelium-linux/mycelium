@@ -125,6 +125,7 @@ pub async fn handle(state: &FrontdoorState, request: Request<Body>) -> Response<
             }
         }
         (Method::POST, "/api/connectors/ai") => put_ai_key(&body).await,
+        (Method::POST, "/api/keys/cloudflare") => put_cloudflare_token(&body).await,
         (Method::GET, "/api/spore/icon") => {
             let id = query_value(&query, "id").unwrap_or_default();
             spore_icon(&id)
@@ -307,6 +308,7 @@ async fn summary(state: &FrontdoorState) -> Value {
         "vfs": vfs.unwrap_or_else(|_| json!({"error": "vfs probe failed"})),
         "unibus": unibus.unwrap_or_else(|_| json!({"error": "unibus probe failed"})),
         "profile": read_profile(),
+        "keymap": keymap(),
         "connectors": connectors(state),
         "spores": scan_spores(),
         "frontdoor": {
@@ -378,6 +380,30 @@ fn decorate_fleet(
                 "architecture": hello["architecture"].clone(),
                 "ssh_listening": peer["health"]["ssh_listening"].clone(),
                 "load_average": peer["health"]["load_average"].clone(),
+                "uptime_seconds": peer["health"]["uptime_seconds"].clone(),
+                "logical_cpus": peer["health"]["logical_cpus"].clone(),
+                "memory_total_bytes": peer["health"]["memory_total_bytes"].clone(),
+                "memory_available_bytes": peer["health"]["memory_available_bytes"].clone(),
+                "swap_total_bytes": peer["health"]["swap_total_bytes"].clone(),
+                "swap_free_bytes": peer["health"]["swap_free_bytes"].clone(),
+                "filesystems": peer["health"]["filesystems"].clone(),
+                "established_ssh_sessions": peer["health"]["established_ssh_sessions"].clone(),
+                "power": peer["health"]["power"].clone(),
+                "link": peer["health"]["link"].clone(),
+                "pressure": json!({
+                    "cpu": peer["health"]["platform_metrics"]["pressure_cpu"],
+                    "memory": peer["health"]["platform_metrics"]["pressure_memory"],
+                    "io": peer["health"]["platform_metrics"]["pressure_io"],
+                }),
+                "process_leaders": Value::Array(
+                    peer["health"]["process_leaders"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .take(5)
+                        .cloned()
+                        .collect()
+                ),
                 "transports": peer["transports"].as_array().map(Vec::len).unwrap_or(0),
             }),
         );
@@ -964,6 +990,100 @@ async fn reveal(body: &Bytes) -> Response<Body> {
             ),
         }
     }
+}
+
+fn keymap() -> Vec<Value> {
+    let home = home_dir();
+    let config = config_home();
+    let bifrost = std::fs::read_to_string(config.join("bifrost-local/bifrost.toml"))
+        .map(|text| parse_bifrost(&text))
+        .unwrap_or_else(|_| json!({"users": [], "backends": []}));
+    let mut keys: Vec<Value> = Vec::new();
+
+    for user in list_values(&bifrost["users"]) {
+        let name = user["name"].as_str().unwrap_or("account");
+        keys.push(json!({
+            "id": format!("bifrost-{name}"),
+            "name": format!("Bifrost · {name}"),
+            "provider": "Bifrost",
+            "badge": "BF",
+            "color": "#8b9dff",
+            "present": user["has_key"].as_bool().unwrap_or(false),
+            "source": "local Bifrost account",
+            "editable": true,
+            "action": "ai",
+        }));
+    }
+
+    let cloudflare = mycelium_home().join("managed/cloudflared-tunnel/token");
+    keys.push(json!({
+        "id": "cloudflare-tunnel",
+        "name": "Cloudflare tunnel",
+        "provider": "Cloudflare",
+        "badge": "CF",
+        "color": "#f0a35e",
+        "present": cloudflare.is_file(),
+        "source": "managed tunnel token",
+        "path": cloudflare.display().to_string(),
+        "editable": true,
+        "action": "cloudflare",
+    }));
+
+    let loki = config.join("loki/loki.toml");
+    keys.push(json!({
+        "id": "loki-upstream",
+        "name": "Loki upstream",
+        "provider": "Loki",
+        "badge": "LK",
+        "color": "#6fbf9a",
+        "present": std::env::var_os("LOKI_UPSTREAM_TOKEN").is_some() && loki.is_file(),
+        "source": "LOKI_UPSTREAM_TOKEN + loki.toml",
+        "path": loki.display().to_string(),
+        "editable": false,
+        "action": "",
+    }));
+
+    for (file, label) in [
+        ("studio-mcp-provider.token", "MCP provider"),
+        ("confluence.token", "Confluence webhook"),
+    ] {
+        let path = config.join("unibus").join(file);
+        keys.push(json!({
+            "id": file,
+            "name": label,
+            "provider": "Unibus",
+            "badge": "UB",
+            "color": "#c9a6ff",
+            "present": path.is_file(),
+            "source": "Unibus token file",
+            "path": path.display().to_string(),
+            "editable": false,
+            "action": "",
+        }));
+    }
+    keys
+}
+
+fn list_values(value: &Value) -> Vec<Value> {
+    value.as_array().cloned().unwrap_or_default()
+}
+
+async fn put_cloudflare_token(body: &Bytes) -> Response<Body> {
+    let input = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, &error),
+    };
+    let Some(token) = input.get("token").and_then(Value::as_str).map(str::trim) else {
+        return api_error(StatusCode::BAD_REQUEST, "token is required");
+    };
+    if token.len() < 20 || token.len() > 4096 || token.contains('\n') {
+        return api_error(StatusCode::BAD_REQUEST, "token is invalid");
+    }
+    let path = mycelium_home().join("managed/cloudflared-tunnel/token");
+    if let Err(error) = write_private(&path, format!("{token}\n").as_bytes()) {
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error);
+    }
+    json_response(json!({"ok": true, "key": file_note(&path)}))
 }
 
 // ---------------------------------------------------------------- profile

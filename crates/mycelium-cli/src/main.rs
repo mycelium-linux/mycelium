@@ -256,7 +256,8 @@ usage:
   mycelium update policy enable [--channel CHANNEL] [--minimum-age 15m] [--rollout-window 30m] [--retry-backoff 1h] --write
   mycelium update policy disable --write
   mycelium fleet status [--site SITE] [--platform linux|darwin] [--json]
-  mycelium fleet exec [--site SITE] [--platform linux|darwin] [--user USER] -- COMMAND...
+  mycelium fleet top [--site SITE] [--platform linux|darwin] [--json]
+  mycelium fleet exec [--site SITE] [--platform linux|darwin] [--user USER] [--yes] -- COMMAND...
   mycelium wireguard plan LEFT RIGHT [--left-subnet CIDR...] [--right-subnet CIDR...] [--left-translation none|source-nat] [--right-translation none|source-nat]
     [--left-endpoint HOST:PORT] [--right-endpoint HOST:PORT]
     [--left-key PUBLIC-KEY] [--right-key PUBLIC-KEY] [--interface NAME] [--json]
@@ -895,8 +896,12 @@ async fn fleet(args: &[String]) -> Result<Vec<String>, ClientError> {
         .into_iter()
         .flatten()
         .filter(|peer| {
-            site.as_deref()
-                .is_none_or(|expected| peer["hello"]["site"].as_str() == Some(expected))
+            peer["hello"]["node_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+                && site
+                    .as_deref()
+                    .is_none_or(|expected| peer["hello"]["site"].as_str() == Some(expected))
                 && platform.as_deref().is_none_or(|expected| {
                     peer["hello"]["platform"]
                         .as_str()
@@ -951,7 +956,110 @@ async fn fleet(args: &[String]) -> Result<Vec<String>, ClientError> {
             }
             Ok(lines)
         }
+        "top" => {
+            let rows = selected
+                .into_iter()
+                .map(|peer| {
+                    let health = &peer["health"];
+                    let total = health["memory_total_bytes"].as_u64().unwrap_or(0);
+                    let available = health["memory_available_bytes"].as_u64().unwrap_or(0);
+                    let filesystems = health["filesystems"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    let (disk_total, disk_available) =
+                        filesystems.iter().fold((0u64, 0u64), |acc, fs| {
+                            (
+                                acc.0 + fs["total_bytes"].as_u64().unwrap_or(0),
+                                acc.1 + fs["available_bytes"].as_u64().unwrap_or(0),
+                            )
+                        });
+                    serde_json::json!({
+                        "node_id": peer["hello"]["node_id"],
+                        "hostname": peer["hello"]["hostname"],
+                        "site": peer["hello"]["site"],
+                        "platform": peer["hello"]["platform"],
+                        "daemon_version": peer["hello"]["daemon_version"],
+                        "last_seen": peer["last_seen"],
+                        "load_average": health["load_average"],
+                        "logical_cpus": health["logical_cpus"],
+                        "memory_total_bytes": total,
+                        "memory_used_bytes": total.saturating_sub(available),
+                        "disk_total_bytes": disk_total,
+                        "disk_used_bytes": disk_total.saturating_sub(disk_available),
+                        "uptime_seconds": health["uptime_seconds"],
+                        "ssh_listening": health["ssh_listening"],
+                        "power": health["power"],
+                        "pressure_memory": health["platform_metrics"]["pressure_memory"],
+                        "top_process": health["process_leaders"][0]["name"],
+                    })
+                })
+                .collect::<Vec<_>>();
+            if json {
+                return Ok(vec![serde_json::Value::Array(rows).to_string()]);
+            }
+            let mut lines = vec!["Fleet top:".to_string()];
+            lines.push(format!(
+                "  {:<14} {:<20} {:>5} {:>15} {:>15} {:>9} {:>4}",
+                "SITE", "HOST", "LOAD", "MEMORY", "DISK", "UPTIME", "SSH"
+            ));
+            for row in rows {
+                let memory_total = row["memory_total_bytes"].as_u64().unwrap_or(0);
+                let memory_used = row["memory_used_bytes"].as_u64().unwrap_or(0);
+                let disk_total = row["disk_total_bytes"].as_u64().unwrap_or(0);
+                let disk_used = row["disk_used_bytes"].as_u64().unwrap_or(0);
+                let uptime = row["uptime_seconds"].as_u64().unwrap_or(0);
+                lines.push(format!(
+                    "  {:<14} {:<20} {:>5} {:>15} {:>15} {:>9} {:>4}",
+                    row["site"].as_str().unwrap_or("?"),
+                    row["hostname"].as_str().unwrap_or("?"),
+                    row["load_average"][0]
+                        .as_f64()
+                        .map(|value| format!("{value:.2}"))
+                        .unwrap_or_else(|| "-".into()),
+                    if memory_total == 0 {
+                        "—".to_string()
+                    } else {
+                        format!("{}/{}", human_bytes(memory_used), human_bytes(memory_total))
+                    },
+                    if disk_total == 0 {
+                        "—".to_string()
+                    } else {
+                        format!("{}/{}", human_bytes(disk_used), human_bytes(disk_total))
+                    },
+                    human_duration(uptime),
+                    row["ssh_listening"]
+                        .as_bool()
+                        .map_or("?", |up| if up { "up" } else { "down" }),
+                ));
+            }
+            Ok(lines)
+        }
         "exec" => {
+            // Arbitrary commands run with each peer's authority. A person gets
+            // a prompt; an agent must say yes explicitly, so a loop cannot
+            // widen a one-host request into the whole fleet by accident.
+            let yes = args.iter().any(|argument| argument == "--yes");
+            if !yes {
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    eprint!(
+                        "Run this command on {} peer(s)? type 'yes' to continue: ",
+                        selected.len()
+                    );
+                    let mut answer = String::new();
+                    std::io::stdin()
+                        .read_line(&mut answer)
+                        .map_err(ClientError::Io)?;
+                    if answer.trim() != "yes" {
+                        return Ok(vec!["aborted".into()]);
+                    }
+                } else {
+                    return Err(err_usage(
+                        "fleet exec is destructive; pass --yes in non-interactive use",
+                    ));
+                }
+            }
             let separator = args
                 .iter()
                 .position(|arg| arg == "--")
@@ -4562,6 +4670,32 @@ fn remote_operand(value: &str) -> Option<(&str, &str)> {
     value
         .split_once(':')
         .filter(|(device, path)| !device.is_empty() && !path.is_empty())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let value = bytes as f64;
+    if value >= GIB {
+        format!("{:.1}G", value / GIB)
+    } else if value >= MIB {
+        format!("{:.0}M", value / MIB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+fn human_duration(seconds: u64) -> String {
+    if seconds == 0 {
+        return "-".into();
+    }
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else {
+        format!("{hours}h {}m", (seconds % 3_600) / 60)
+    }
 }
 
 async fn scp(args: &[String]) -> Result<Vec<String>, ClientError> {

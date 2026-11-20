@@ -16,8 +16,9 @@ It is a client, not a second daemon. Every value comes from the same
 - **Peers**: the count and the first five rows from
   `mycelium fleet status --json`.
 - **Frontdoor**: installed/listening from `mycelium frontdoor status --json`.
-- **Toggles**: daemon start/stop, public relays (only when the binary was
-  built with `iroh-sync`), and tunnel restart when a tunnel is configured.
+- **Toggles**: daemon start/stop, public relays (shown when the binary has
+  `iroh-sync`; the switch reads `public_relays` from `iroh-sync.json`, so it
+  agrees with the dashboard), and tunnel restart when a tunnel is configured.
 - **Actions**: Open Home (`https://home.myc/`), Open Store
   (`https://store.myc/`), Spores…, Quit.
 
