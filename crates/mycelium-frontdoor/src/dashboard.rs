@@ -94,6 +94,7 @@ pub async fn handle(state: &FrontdoorState, request: Request<Body>) -> Response<
         (Method::GET, "/api/routes") => json_response(routes(state)),
         (Method::PUT, "/api/routes") => put_routes(state, &body).await,
         (Method::PUT, "/api/settings") => put_settings(state, &body).await,
+        (Method::PUT, "/api/overlay") => put_overlay(state, &body).await,
         (Method::POST, "/api/pulse") => pulse_add(state, &body).await,
         (Method::POST, "/api/pulse/toggle") => pulse_toggle(state, &body).await,
         (Method::POST, "/api/pulse/remove") => pulse_remove(state, &body).await,
@@ -247,25 +248,29 @@ async fn call_write(bin: &Option<PathBuf>, args: &[String]) -> Result<Value, Str
 
 async fn summary(state: &FrontdoorState) -> Value {
     let bin = binary(state);
-    let (node, fleet, tunnel, pulse) = tokio::join!(
+    let (node, fleet, tunnel, pulse, peers) = tokio::join!(
         call_json(&bin, &["node", "status", "--json"]),
         call_json(&bin, &["fleet", "status", "--json"]),
         call_json(&bin, &["iroh-tun", "status", "--json"]),
         call_json(&bin, &["pulse", "list", "--json"]),
+        call_json(&bin, &["peers", "--json"]),
     );
-    let (geode, vfs) = tokio::join!(
+    let (geode, vfs, unibus) = tokio::join!(
         tokio::task::spawn_blocking(geode),
-        tokio::task::spawn_blocking(vfs)
+        tokio::task::spawn_blocking(vfs),
+        tokio::task::spawn_blocking(unibus)
     );
     let table = state.table.read().unwrap();
     json!({
         "ok": true,
         "node": result_or_error(node),
-        "fleet": result_or_error(fleet),
+        "fleet": result_or_error(decorate_fleet(fleet, peers)),
         "tunnel": result_or_error(tunnel),
+        "overlay_config": overlay_config(),
         "pulse": result_or_error(pulse),
         "geode": geode.unwrap_or_else(|_| json!({"error": "geode probe failed"})),
         "vfs": vfs.unwrap_or_else(|_| json!({"error": "vfs probe failed"})),
+        "unibus": unibus.unwrap_or_else(|_| json!({"error": "unibus probe failed"})),
         "frontdoor": {
             "routes": table.total_routes(),
             "derived_routes": table.derived_routes(),
@@ -282,6 +287,262 @@ fn result_or_error(result: Result<Value, String>) -> Value {
         Ok(value) => json!({"ok": true, "value": value}),
         Err(error) => json!({"ok": false, "error": error}),
     }
+}
+
+/// Join `fleet status` with the richer `peers` projection. The fleet table is
+/// what the daemon publishes to every console; `peers` adds the addresses and
+/// capabilities that make a row worth opening. Hardware inventories are
+/// dropped here: a dashboard does not need a PCI tree to name a peer.
+fn decorate_fleet(
+    fleet: Result<Value, String>,
+    peers: Result<Value, String>,
+) -> Result<Value, String> {
+    let mut fleet = fleet?;
+    let Ok(peers) = peers else {
+        return Ok(fleet);
+    };
+    let mut details = std::collections::BTreeMap::new();
+    for peer in peers.as_array().into_iter().flatten() {
+        let hello = &peer["hello"];
+        let Some(id) = hello["node_id"].as_str().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let addresses: Vec<Value> = hello["interfaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|interface| {
+                interface["addresses"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        details.insert(
+            id.to_owned(),
+            json!({
+                "node_id": id,
+                "addresses": addresses,
+                "capabilities": hello["capabilities"].clone(),
+                "platform": hello["platform"].clone(),
+                "architecture": hello["architecture"].clone(),
+                "ssh_listening": peer["health"]["ssh_listening"].clone(),
+                "load_average": peer["health"]["load_average"].clone(),
+                "transports": peer["transports"].as_array().map(Vec::len).unwrap_or(0),
+            }),
+        );
+    }
+    if let Some(rows) = fleet.as_array_mut() {
+        // A peer that has a heartbeat but no hello is a row nobody can act on;
+        // keep the table to peers that can actually be addressed.
+        rows.retain(|row| row["hostname"].is_string() || row["node_id"].is_string());
+        for row in rows {
+            let Some(id) = row["node_id"].as_str() else {
+                continue;
+            };
+            if let Some(detail) = details.get(id).and_then(Value::as_object) {
+                if let Some(fields) = row.as_object_mut() {
+                    for (key, value) in detail {
+                        fields.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(fleet)
+}
+
+fn config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config"))
+}
+
+/// The Unibus hub is a TCP bus, not an HTTP service, so the dashboard reports
+/// what it can verify without inventing an admin protocol: the configured
+/// producers and routes, whether the listener answers, and the recent hub log.
+fn unibus() -> Value {
+    let config_path = config_home().join("unibus/hub.json");
+    let text = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let config: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+    let listen = config["listen"].as_str().unwrap_or("127.0.0.1:18890");
+    let reachable = probe_tcp(listen, Duration::from_millis(500));
+
+    let producers: Vec<Value> = config["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|node| {
+            let token = node["token_file"].as_str().unwrap_or_default();
+            json!({
+                "id": node["producer_id"],
+                "zones": node["zones"].clone(),
+                "capabilities": node["capabilities"].clone(),
+                "publishes": node["publishes"].clone(),
+                "token_present": !token.is_empty() && Path::new(token).is_file(),
+            })
+        })
+        .collect();
+    let routes: Vec<Value> = config["routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|route| {
+            json!({
+                "kind": route["kind"],
+                "mode": route["target"]["mode"],
+                "holder": route["target"]["name"],
+                "peer": route["target"]["peer_id"],
+            })
+        })
+        .collect();
+    let log_path = config_home().join("unibus/hub.log");
+    json!({
+        "config": config_path.display().to_string(),
+        "config_present": config_path.is_file(),
+        "log": log_path.display().to_string(),
+        "listen": listen,
+        "reachable": reachable,
+        "installation": config["installation_id"],
+        "allow_insecure_lan": config["allow_insecure_lan"].clone(),
+        "producers": producers,
+        "routes": routes,
+        "recent": tail_lines(&log_path, 14),
+    })
+}
+
+fn overlay_config() -> Value {
+    let path = mycelium_home().join("iroh-tun.json");
+    let config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    json!({"path": path.display().to_string(), "config": config})
+}
+
+async fn put_overlay(state: &FrontdoorState, body: &Bytes) -> Response<Body> {
+    let input = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, &error),
+    };
+    let mut args = vec!["iroh-tun".to_owned(), "config".to_owned()];
+    if let Some(enabled) = input.get("enabled").and_then(Value::as_bool) {
+        args.push("--enabled".into());
+        args.push(enabled.to_string());
+    }
+    for (key, flag) in [
+        ("tun", "--tun"),
+        ("listen", "--listen"),
+        ("status", "--status"),
+        ("binary", "--binary"),
+    ] {
+        if let Some(value) = input.get(key).and_then(Value::as_str) {
+            if value.len() > 200 || value.contains('\n') {
+                return api_error(StatusCode::BAD_REQUEST, &format!("{key} is invalid"));
+            }
+            args.push(flag.into());
+            args.push(value.to_owned());
+        }
+    }
+    if let Some(mtu) = input.get("mtu").and_then(Value::as_u64) {
+        args.push("--mtu".into());
+        args.push(mtu.to_string());
+    }
+    if let Some(refresh) = input.get("refresh_secs").and_then(Value::as_u64) {
+        args.push("--refresh-secs".into());
+        args.push(refresh.to_string());
+    }
+    if let Some(external) = input.get("external").and_then(Value::as_bool) {
+        args.push("--external".into());
+        args.push(external.to_string());
+    }
+    if let Some(overlay) = input.get("overlay").and_then(Value::as_array) {
+        for cidr in overlay {
+            let Some(cidr) = cidr.as_str().filter(|cidr| !cidr.trim().is_empty()) else {
+                continue;
+            };
+            if cidr.len() > 64 || cidr.contains('\n') {
+                return api_error(StatusCode::BAD_REQUEST, "overlay CIDR is invalid");
+            }
+            args.push("--overlay".into());
+            args.push(cidr.to_owned());
+        }
+    }
+    if args.len() <= 2 {
+        return api_error(StatusCode::BAD_REQUEST, "no overlay settings supplied");
+    }
+    args.push("--write".into());
+    let bin = binary(state);
+    match call_write(&bin, &args).await {
+        Ok(value) => {
+            let status = call_json(&bin, &["iroh-tun", "status", "--json"])
+                .await
+                .ok();
+            json_response(json!({
+                "ok": true,
+                "output": value["output"],
+                "status": status,
+                "config": overlay_config()["config"],
+            }))
+        }
+        Err(error) => json_response(json!({"ok": false, "error": error})),
+    }
+}
+
+fn probe_tcp(listen: &str, timeout: Duration) -> bool {
+    let Some((host, port)) = listen.rsplit_once(':') else {
+        return false;
+    };
+    let host = match host.trim_matches(['[', ']']) {
+        "0.0.0.0" | "" | "::" => "127.0.0.1",
+        host => host,
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        return false;
+    };
+    let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&addr, timeout).is_ok()
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut escape = false;
+    for ch in line.chars() {
+        if escape {
+            if ch.is_ascii_alphabetic() {
+                escape = false;
+            }
+            continue;
+        }
+        if ch == '\u{1b}' {
+            escape = true;
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn tail_lines(path: &Path, count: usize) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = text.lines().rev().take(count * 4).collect();
+    lines
+        .into_iter()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let clean = strip_ansi(line);
+            clean.chars().take(360).collect::<String>()
+        })
+        .rev()
+        .take(count)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 // ---------------------------------------------------------------- probes
@@ -374,6 +635,10 @@ fn vfs() -> Value {
     json!({
         "roots": root_rows,
         "desktops": desktops(),
+        "files": {
+            "url": "https://files.myc/",
+            "running": probe_tcp("127.0.0.1:8803", Duration::from_millis(350)),
+        },
     })
 }
 
