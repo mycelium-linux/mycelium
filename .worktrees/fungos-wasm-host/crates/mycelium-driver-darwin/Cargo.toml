@@ -1,0 +1,14 @@
+[package]
+name = "mycelium-driver-darwin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "mycelium SSH observation driver for Darwin/macOS hosts"
+
+[dependencies]
+mycelium-core.workspace = true
+mycelium-driver-edgeos.workspace = true
+mycelium-tailscale.workspace = true
+mycelium-dnssd.workspace = true
+mycelium-ssdp.workspace = true
+async-trait.workspace = true

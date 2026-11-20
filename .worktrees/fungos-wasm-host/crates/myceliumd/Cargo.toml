@@ -1,0 +1,47 @@
+[package]
+name = "myceliumd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "mycelium control-plane daemon: inventory, drivers, scans, topology over a Unix socket"
+
+[lib]
+name = "myceliumd"
+path = "src/lib.rs"
+
+[features]
+default = []
+iroh-discovery = ["dep:mycelium-iroh-discovery"]
+iroh-sync = ["iroh-discovery", "dep:iroh"]
+
+[[bin]]
+name = "myceliumd"
+path = "src/main.rs"
+
+[dependencies]
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-aws-lc-rs"], optional = true }
+mycelium-iroh-discovery = { path = "../mycelium-iroh-discovery", optional = true }
+mycelium-core.workspace = true
+mycelium-driver-edgeos.workspace = true
+mycelium-driver-darwin.workspace = true
+mycelium-driver-linux.workspace = true
+mycelium-driver-redfish.workspace = true
+mycelium-driver-snmp.workspace = true
+mycelium-driver-unifi.workspace = true
+mycelium-plugins-lua.workspace = true
+mycelium-peer-protocol.workspace = true
+fpl-resource-observation.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rumqttc = "0.25"
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+ed25519-dalek.workspace = true
+rand_core.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"

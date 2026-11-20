@@ -1,0 +1,14 @@
+[Unit]
+Description=Confirm the first isolated fungOS boot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/fungos-qemu-proof
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

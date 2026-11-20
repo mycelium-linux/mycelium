@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "defaults": { "updates": { "mode": "manual" } },
+  "rules": [
+    {
+      "name": "explicit-oci-conversion-tooling",
+      "selector": { "all": [ "platform.linux", "role.shroudoci" ] },
+      "packages": [ { "name": "shroudoci", "channel": "fungos-tooling-test" } ]
+    }
+  ]
+}

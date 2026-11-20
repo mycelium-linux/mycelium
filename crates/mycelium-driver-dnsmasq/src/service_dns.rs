@@ -110,6 +110,7 @@ mod tests {
     use super::*;
     use mycelium_dns_policy::service_names::entrance_address;
     use serde_json::json;
+    use std::net::Ipv4Addr;
     struct PolicyFile(std::path::PathBuf);
     impl PolicyFile {
         fn new(source: &str) -> Self {
