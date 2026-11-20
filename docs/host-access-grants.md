@@ -32,9 +32,20 @@ its existing user. Create `/etc/mycelium/access.json`, owned by root, containing
   "accepted_roles": ["network-admin", "home-operator"],
   "sudo_roles": ["network-admin"],
   "ca_public": "/etc/ssh/mycelium/user_ca.pub",
+  "unix_id_min": 3000,
+  "unix_id_max": 5999,
   "pam_services": ["sshd", "sudo"]
 }
 ```
+
+`unix_id_min`/`unix_id_max` bound the authority-signed UID/GID range this host
+accepts. Grants may carry a `unix_ids` map keyed by `unix_users`; the authority
+chooses those numbers so every host with shared VFS sees the same owner.
+Grant reconciliation refuses to create a new account without a signed ID and
+refuses to renumber an existing account whose UID/GID differs. Grants without
+`unix_ids` remain readable for migration, but an existing account is only
+adopted if it was already in the root-managed set; a missing account cannot be
+created from a grant that lacks the signed identity.
 
 Accepted roles are host admission policy; sudo roles must be a subset. Only
 the root policy can map an admitted role to unrestricted passwordless sudo.
@@ -71,12 +82,18 @@ The timer targets two-minute reconciliation, not instantaneous revocation;
 failed enforcement remains a visible failed systemd service. Already-running
 sessions/processes are not terminated.
 
-Accounts and homes are retained after revocation. Managed sudo rules are
-replaced, SSH principals removed and PAM denies previously managed accounts
-without current grants. Unmanaged recovery users and unrelated sudoers rules
-are not changed; pre-existing unmanaged grants may independently permit sudo.
-Account creation uses the existing SSH host-bundle implementation and locks
-passwords on newly created accounts only.
+Accounts and homes are retained after revocation. A managed account with no
+current grant is disabled, not deleted: its shell moves to `nologin` and its
+account expiry is set. A later grant with the same signed UID/GID re-enables the
+same account, so VFS ownership and the home survive both revocation and return.
+Managed sudo rules are replaced, SSH principals removed and PAM denies
+previously managed accounts without current grants. Unmanaged recovery users
+and unrelated sudoers rules are not changed; pre-existing unmanaged grants may
+independently permit sudo. Account creation uses the signed UID/GID, creates the
+matching primary group, and locks passwords on newly created accounts only. The
+privileged reconciler passes `--no-accounts` to the SSH bundle so account
+lifecycle has one owner; the standalone `host-bundle` command retains its
+legacy manifest behavior for migration.
 
 PAM uses the distribution's `pam_exec.so` to call the fixed root bootstrap's
 offline `pam-check` account action for `sshd`/`sudo`. Retained signatures,

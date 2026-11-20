@@ -1421,9 +1421,13 @@ fn host_bundle(args: &[String], state: &Value) -> Result<Vec<String>, String> {
              PubkeyAuthentication yes\n",
         )
         .map_err(|e| format!("write sshd drop-in: {e}"))?;
-        let manifest = HostBundleManifest {
-            version: 2,
-            accounts: role_mappings
+        // The privileged host reconciler owns account lifecycle and passes
+        // --no-accounts after creating accounts with signed UID/GIDs. The
+        // standalone bundle path keeps its legacy account manifest.
+        let accounts = if args.iter().any(|arg| arg == "--no-accounts") {
+            Vec::new()
+        } else {
+            role_mappings
                 .keys()
                 .map(|name| HostAccountIntent {
                     name: name.clone(),
@@ -1431,7 +1435,11 @@ fn host_bundle(args: &[String], state: &Value) -> Result<Vec<String>, String> {
                     password_locked: true,
                     supplementary_groups: Vec::new(),
                 })
-                .collect(),
+                .collect()
+        };
+        let manifest = HostBundleManifest {
+            version: 2,
+            accounts,
         };
         fs::write(
             staging.join("manifest.json"),

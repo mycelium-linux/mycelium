@@ -29,9 +29,27 @@ Publish a signed grant whose `principal` is stable. For OIDC identities,
 Mycelium derives `oidc:<issuer>#<subject>` after verifying the provider token.
 The grant must contain a unique SSH certificate `serial`, at least one
 `unix_users` principal, validity bounds, and the permitted `ssh_public_keys`.
-Start from [`examples/access-grant.json`](examples/access-grant.json), replace
-the example key with the exact contents of the user's `.pub` file, and choose
-fresh validity timestamps and a never-reused serial.
+A grant that will create a new Linux account must also carry `unix_ids`, a map
+from each `unix_users` entry to its authority-chosen `uid` and `gid`. Hosts with
+shared VFS use those signed numbers instead of letting each `useradd` pick a
+local value; a host refuses to create an account without them and refuses to
+silently renumber an existing account. Start from
+[`examples/access-grant.json`](examples/access-grant.json), replace the example
+key with the exact contents of the user's `.pub` file, and choose fresh
+validity timestamps and a never-reused serial.
+
+Keep allocations from colliding with the authority-local ledger, then copy the
+reported map into the grant:
+
+```sh
+mycelium access unix-id allocate avery james --min 4000 --max 4999 --write
+mycelium access unix-id list
+```
+
+The ledger lives at `~/.mycelium/access/unix-ids.json` by default (`--path`
+overrides it), is private, and is not gossiped. It is a convenience, not
+authority: hosts enforce only the signed `unix_ids` map in the grant. Re-running
+`allocate` for an existing user returns the same IDs.
 
 ```sh
 mycelium access publish \

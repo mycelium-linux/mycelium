@@ -602,6 +602,18 @@ pub struct TopologySnapshot {
     pub topology: serde_json::Value,
 }
 
+/// Stable numeric identity for one managed Unix account.
+///
+/// The authority, not each host's `useradd` allocator, chooses these values so
+/// a fleet with shared VFS sees the same owner for the same account. Hosts
+/// enforce the signed value and refuse to silently renumber an existing user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnixId {
+    pub uid: u32,
+    pub gid: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccessStatement {
@@ -615,6 +627,11 @@ pub enum AccessStatement {
         scopes: Vec<String>,
         #[serde(default)]
         unix_users: Vec<String>,
+        /// Optional stable UID/GID per `unix_users` entry. Grants without this
+        /// map remain valid for existing accounts; creating a new account
+        /// requires the signed value so hosts cannot disagree about ownership.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        unix_ids: BTreeMap<String, UnixId>,
         #[serde(default)]
         ssh_public_keys: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -642,6 +659,14 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl AccessStatement {
+    /// The authority-signed numeric identity for a managed Unix account.
+    pub fn unix_id(&self, user: &str) -> Option<UnixId> {
+        match self {
+            Self::Grant { unix_ids, .. } => unix_ids.get(user).copied(),
+            Self::Revoke { .. } => None,
+        }
+    }
+
     pub fn revokes(&self, grant: &AccessStatement) -> bool {
         let Self::Revoke {
             grant_id,
@@ -1500,6 +1525,7 @@ mod tests {
                 roles: vec!["operator".into()],
                 scopes: vec!["home".into()],
                 unix_users: vec!["avery".into()],
+                unix_ids: Default::default(),
                 ssh_public_keys: vec!["ssh-ed25519 AAAA".into()],
                 oidc_audiences: vec![],
                 oidc_ssh_key_exchange: false,
@@ -1527,6 +1553,7 @@ mod tests {
             roles: vec![],
             scopes: vec![],
             unix_users: vec![],
+            unix_ids: Default::default(),
             ssh_public_keys: vec![],
             oidc_audiences: vec![],
             oidc_ssh_key_exchange: false,
@@ -1551,6 +1578,54 @@ mod tests {
         };
         assert!(matching.revokes(&grant));
         assert!(!wrong_serial.revokes(&grant));
+    }
+
+    #[test]
+    fn unix_ids_are_optional_and_covered_by_the_signature() {
+        let legacy: AccessStatement = serde_json::from_str(
+            r#"{"kind":"grant","grant_id":"legacy","principal":"avery","serial":1,
+                "unix_users":["avery"],"not_before":1,"not_after":2}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.unix_id("avery"), None);
+
+        let key = SigningKey::from_bytes(&[13; 32]);
+        let mut record = AccessRecord::sign(
+            &key,
+            AccessStatement::Grant {
+                grant_id: "stable".into(),
+                principal: "avery".into(),
+                serial: 2,
+                roles: vec![],
+                scopes: vec![],
+                unix_users: vec!["avery".into()],
+                unix_ids: BTreeMap::from([(
+                    "avery".into(),
+                    UnixId {
+                        uid: 4001,
+                        gid: 4001,
+                    },
+                )]),
+                ssh_public_keys: vec![],
+                oidc_audiences: vec![],
+                oidc_ssh_key_exchange: false,
+                not_before: 1,
+                not_after: 2,
+            },
+        )
+        .unwrap();
+        record.verify().unwrap();
+        assert_eq!(
+            record.statement.unix_id("avery"),
+            Some(UnixId {
+                uid: 4001,
+                gid: 4001
+            })
+        );
+        if let AccessStatement::Grant { unix_ids, .. } = &mut record.statement {
+            unix_ids.get_mut("avery").unwrap().uid = 4002;
+        }
+        assert!(record.verify().is_err());
     }
 
     #[test]
