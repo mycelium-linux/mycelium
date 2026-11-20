@@ -2739,6 +2739,50 @@ fn frontdoor_usage_metrics(
     Ok(Some(metrics.to_platform_metrics()))
 }
 
+/// Sum non-loopback interface counters. Cumulative bytes, not a rate: the
+/// reader computes the rate from two observations, so a missed gossip tick does
+/// not turn into a fake spike.
+#[cfg(target_os = "linux")]
+fn linux_network_bytes(text: &str) -> Option<(u64, u64)> {
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    for line in text.lines().skip(2) {
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim() == "lo" {
+            continue;
+        }
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if fields.len() < 9 {
+            continue;
+        }
+        rx = rx.saturating_add(fields[0].parse().unwrap_or(0));
+        tx = tx.saturating_add(fields[8].parse().unwrap_or(0));
+    }
+    Some((rx, tx))
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_network_bytes(text: &str) -> Option<(u64, u64)> {
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Per-interface header row: Name Mtu <Link#N> Ipkts Ierrs Ibytes
+        // Opkts Oerrs Obytes Coll.
+        if fields.len() < 10 || !fields[2].starts_with("<Link#") {
+            continue;
+        }
+        if fields[0] == "lo0" {
+            continue;
+        }
+        rx = rx.saturating_add(fields[5].parse().unwrap_or(0));
+        tx = tx.saturating_add(fields[8].parse().unwrap_or(0));
+    }
+    Some((rx, tx))
+}
+
 fn add_update_health(health: &mut HostHealth) {
     let state = crate::read_update_state();
     if let Ok(executable) = std::env::current_exe() {
@@ -2782,6 +2826,12 @@ fn collect_linux() -> Result<HostHealth, AnyError> {
         if let Ok(value) = std::fs::read_to_string(format!("/proc/pressure/{kind}")) {
             platform_metrics.insert(format!("pressure_{kind}"), value.trim().into());
         }
+    }
+    if let Some((rx, tx)) =
+        linux_network_bytes(&std::fs::read_to_string("/proc/net/dev").unwrap_or_default())
+    {
+        platform_metrics.insert("network_rx_bytes".into(), rx.to_string());
+        platform_metrics.insert("network_tx_bytes".into(), tx.to_string());
     }
     if let Some((overflows, drops)) =
         linux_listen_drops(&std::fs::read_to_string("/proc/net/netstat").unwrap_or_default())
@@ -2838,6 +2888,13 @@ fn collect_darwin() -> Result<HostHealth, AnyError> {
     let (swap_total_bytes, swap_free_bytes) =
         parse_darwin_swap(&output("/usr/sbin/sysctl", &["-n", "vm.swapusage"])?);
     let sockets = output("/usr/sbin/lsof", &["-nP", "-iTCP:22"]).unwrap_or_default();
+    let mut platform_metrics = BTreeMap::new();
+    if let Some((rx, tx)) =
+        darwin_network_bytes(&output("/usr/sbin/netstat", &["-ib"]).unwrap_or_default())
+    {
+        platform_metrics.insert("network_rx_bytes".into(), rx.to_string());
+        platform_metrics.insert("network_tx_bytes".into(), tx.to_string());
+    }
     Ok(HostHealth {
         observed_at: now(),
         uptime_seconds: now().saturating_sub(boot_seconds),
@@ -2858,7 +2915,7 @@ fn collect_darwin() -> Result<HostHealth, AnyError> {
             .count() as u32,
         power: darwin_power(),
         link: darwin_link(),
-        platform_metrics: BTreeMap::new(),
+        platform_metrics,
     })
 }
 

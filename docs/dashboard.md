@@ -20,8 +20,8 @@ nothing.
 | **Activity** | A human view of the local bus: connected sources, what they publish, where kinds route, and a plain-language event feed. | `~/.config/unibus/hub.json` + a TCP probe + `hub.log` tail |
 | **Files** | A Finder-shaped browser over the content roots: sidebar, list, breadcrumb, inline preview for text and images, and **Reveal in Finder**. `Open Files` goes to `files.myc` | `/api/files` over the allowed roots + `mount` |
 | **Spores** | Every installed Spore, separate from content: its own mark (or badge/colour), one-line description, Open and Reveal, plus the Store. | the two Spore install roots + `[presentation]` |
-| **Fleet** | Search, site filter, sort, freshness dots, SSH coverage, version spread, and a row that opens into addresses/capabilities/identity. | `fleet status --json` joined with `peers --json` |
-| **Vault (Geode)** | Is the local broker live, is its store private, how big is it? | socket probe + `~/.geode` metadata |
+| **Fleet** | One health view: site cards with online/memory/disk/versions, plus a fleettop table (load, memory, disk, network rate, uptime, SSH) and a row that opens into addresses, capabilities, top process and pressure. | `fleet status --json` joined with `peers --json`; the same numbers are available as `mycelium fleet top [--json]` ([fleet-top.md](fleet-top.md)) |
+| **Vault (Geode)** | Is the local broker live, is its store private, how big is it? Plus a provider key map (Bifrost, Cloudflare, Loki, Unibus) with logos, presence, Reveal, and rotation for keys that have a safe write path. | socket probe + `~/.geode` metadata + the host's key files |
 | **Connect** | AI (`ai.myc`/Bifrost accounts and named backends, not loopback URLs), MCP (`mcp.myc` and its configs), Loki, the Cloudflare connector, `.myc` hosts, and Spore installs. | the Bifrost TOML + route table + config files + TCP probes |
 | **Settings** | Profile (name, POSIX user, picture), dashboard refresh/theme, public relays, the **overlay tunnel**, and (under Advanced) the frontdoor routes. Controls are bounded where the host has a finite set of choices. | `profile.json`/`avatar`, `dashboard.json`, `iroh-sync.json`, `iroh-tun.json`, `routes.json` |
 
@@ -33,8 +33,9 @@ manifest.
 
 Geode and the Files browser are deliberately read-only: there is no vault item
 API yet, and the Files browser only reads inside the installed content roots.
-Connect writes exactly one secret today — the Bifrost API key — and only to
-`~/.fpl/bifrost-api-key`. It reads the local Bifrost config for the account and
+Connect writes the Bifrost API key to `~/.fpl/bifrost-api-key`; Vault writes the
+Cloudflare tunnel token to the managed token file. Both are `0600`. Everything
+else in the key map is detected and revealed, not copied into the page. It reads the local Bifrost config for the account and
 named backend list, so the page says "This Mac / Agora / Loki / FPL Cloud"
 instead of a loopback URL. `files.myc` still owns CID-addressed browsing; the
 dashboard links to it rather than reimplementing that contract. Leasing a secret and mounting a
@@ -59,6 +60,7 @@ holding a frontdoor token. The frontdoor's own bearer-token check runs first.
 | Pulse add/toggle/remove | `mycelium pulse add|toggle|remove … --write` |
 | Profile | writes `~/.mycelium/dashboard/profile.json` (0600) and `avatar` (0600). Pictures up to 20 MiB are resized in the browser to 512px before upload. |
 | AI key | writes `~/.fpl/bifrost-api-key` (0600) |
+| Cloudflare token | writes `~/.mycelium/managed/cloudflared-tunnel/token` (0600) |
 | Reveal | opens a path in Finder (macOS) or the desktop file manager; restricted to the content roots, Spore roots and Mycelium home |
 | Overlay settings | `mycelium iroh-tun config … --write` |
 | Save routes | validates with `FrontdoorConfig` and writes `routes.json` |
