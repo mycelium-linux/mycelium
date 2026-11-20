@@ -17,6 +17,7 @@ use axum::body::{Body, Bytes};
 use axum::http::{header, Method, Request, Response, StatusCode};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -124,6 +125,11 @@ pub async fn handle(state: &FrontdoorState, request: Request<Body>) -> Response<
             }
         }
         (Method::POST, "/api/connectors/ai") => put_ai_key(&body).await,
+        (Method::GET, "/api/spore/icon") => {
+            let id = query_value(&query, "id").unwrap_or_default();
+            spore_icon(&id)
+        }
+        (Method::POST, "/api/reveal") => reveal(&body).await,
         (Method::POST, "/api/pulse") => pulse_add(state, &body).await,
         (Method::POST, "/api/pulse/toggle") => pulse_toggle(state, &body).await,
         (Method::POST, "/api/pulse/remove") => pulse_remove(state, &body).await,
@@ -543,10 +549,12 @@ fn probe_tcp(listen: &str, timeout: Duration) -> bool {
     let Ok(port) = port.parse::<u16>() else {
         return false;
     };
-    let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
+    let Ok(addresses) = (host, port).to_socket_addrs() else {
         return false;
     };
-    std::net::TcpStream::connect_timeout(&addr, timeout).is_ok()
+    addresses
+        .into_iter()
+        .any(|address| std::net::TcpStream::connect_timeout(&address, timeout).is_ok())
 }
 
 fn strip_ansi(line: &str) -> String {
@@ -836,8 +844,126 @@ fn parse_spore(text: &str) -> Map<String, Value> {
         if section == "spore" && matches!(key, "id" | "name" | "title" | "summary" | "version") {
             out.insert(key.to_owned(), Value::String(value.to_owned()));
         }
+        if section == "presentation" && matches!(key, "badge" | "color" | "mark") {
+            out.insert(key.to_owned(), Value::String(value.to_owned()));
+        }
     }
     out
+}
+
+fn spore_icon(id: &str) -> Response<Body> {
+    let Some(spore) = scan_spores()
+        .into_iter()
+        .find(|spore| spore["id"].as_str() == Some(id))
+    else {
+        return api_error(StatusCode::NOT_FOUND, "no such spore");
+    };
+    let Some(mark) = spore["mark"].as_str().filter(|mark| !mark.is_empty()) else {
+        return api_error(StatusCode::NOT_FOUND, "spore has no mark");
+    };
+    let Some(directory) = spore["path"].as_str() else {
+        return api_error(StatusCode::NOT_FOUND, "spore has no path");
+    };
+    let Ok(base) = std::fs::canonicalize(directory) else {
+        return api_error(StatusCode::NOT_FOUND, "spore path is not readable");
+    };
+    let Ok(target) = std::fs::canonicalize(base.join(mark)) else {
+        return api_error(StatusCode::NOT_FOUND, "spore mark is missing");
+    };
+    if !target.starts_with(&base) {
+        return api_error(StatusCode::FORBIDDEN, "spore mark escapes the spore");
+    }
+    let kind = content_type(&target);
+    if !matches!(
+        kind.split(';').next().unwrap_or(""),
+        "image/svg+xml" | "image/png" | "image/jpeg" | "image/webp"
+    ) {
+        return api_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "spore mark is not an image",
+        );
+    }
+    let Ok(meta) = std::fs::metadata(&target) else {
+        return api_error(StatusCode::NOT_FOUND, "spore mark is missing");
+    };
+    if meta.len() > 1024 * 1024 {
+        return api_error(StatusCode::PAYLOAD_TOO_LARGE, "spore mark is too large");
+    }
+    let Ok(bytes) = std::fs::read(&target) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not read spore mark",
+        );
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, kind)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
+}
+
+fn revealable(path: &Path) -> bool {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let home = home_dir();
+    let mut roots: Vec<PathBuf> = allowed_roots().to_vec();
+    roots.extend(spore_roots());
+    roots.push(mycelium_home());
+    roots.push(home.clone());
+    roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|root| canonical.starts_with(root))
+            .unwrap_or(false)
+    })
+}
+
+async fn reveal(body: &Bytes) -> Response<Body> {
+    let input = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, &error),
+    };
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return api_error(StatusCode::BAD_REQUEST, "path is required");
+    };
+    let path = PathBuf::from(path);
+    if !revealable(&path) {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "path is not one this page may reveal",
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = if path.is_dir() {
+            std::process::Command::new("open").arg(&path).status()
+        } else {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&path)
+                .status()
+        };
+        match status {
+            Ok(status) if status.success() => json_response(json!({"ok": true})),
+            _ => api_error(StatusCode::INTERNAL_SERVER_ERROR, "Finder refused the path"),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let target = if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or(path.clone())
+        };
+        match std::process::Command::new("xdg-open").arg(&target).status() {
+            Ok(status) if status.success() => json_response(json!({"ok": true})),
+            _ => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the desktop refused the path",
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- profile
@@ -921,8 +1047,11 @@ async fn put_profile(body: &Bytes) -> Response<Body> {
         let Some(bytes) = base64_decode(encoded) else {
             return api_error(StatusCode::BAD_REQUEST, "avatar is not valid base64");
         };
-        if bytes.len() > 2 * 1024 * 1024 {
-            return api_error(StatusCode::PAYLOAD_TOO_LARGE, "avatar is larger than 2 MiB");
+        if bytes.len() > 20 * 1024 * 1024 {
+            return api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "avatar is larger than 20 MiB",
+            );
         }
         if let Err(error) = write_private(&avatar_path(), &bytes) {
             return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error);
@@ -1006,6 +1135,127 @@ fn running(needle: &str) -> bool {
             .any(|line| line.contains(needle) && !line.contains("ps -Ao"))
 }
 
+fn split_http(url: &str) -> Option<(&str, u16)> {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
+    let rest = rest.split('/').next().unwrap_or(rest);
+    if let Some((host, port)) = rest.rsplit_once(':') {
+        return Some((host.trim_matches(['[', ']']), port.parse().ok()?));
+    }
+    let port = if scheme == "https" { 443 } else { 80 };
+    Some((rest.trim_matches(['[', ']']), port))
+}
+
+fn push_bifrost_section(
+    kind: &str,
+    map: Map<String, Value>,
+    users: &mut Vec<Value>,
+    backends: &mut Vec<Value>,
+) {
+    if map.is_empty() {
+        return;
+    }
+    match kind {
+        "user" => users.push(Value::Object(map)),
+        "backend" => backends.push(Value::Object(map)),
+        _ => {}
+    }
+}
+
+/// Read the same Bifrost config the local model router uses. The dashboard
+/// shows accounts and named backends, not a loopback URL: the point of the page
+/// is which provider an operator can use, not which port it happens to bind.
+fn parse_bifrost(text: &str) -> Value {
+    let mut users: Vec<Value> = Vec::new();
+    let mut backends: Vec<Value> = Vec::new();
+    let mut kind = String::new();
+    let mut current = Map::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with("[[") {
+            push_bifrost_section(
+                &kind,
+                std::mem::take(&mut current),
+                &mut users,
+                &mut backends,
+            );
+            kind = line.trim_matches(['[', ']']).to_owned();
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let quoted = value.trim_matches('"');
+        match (kind.as_str(), key) {
+            ("user", "name") => {
+                current.insert("name".into(), json!(quoted));
+            }
+            ("user", "key") => {
+                current.insert("has_key".into(), json!(!quoted.is_empty()));
+            }
+            ("backend", "name") => {
+                current.insert("name".into(), json!(quoted));
+            }
+            ("backend", "base_url") => {
+                current.insert("base_url".into(), json!(quoted));
+            }
+            ("backend", "api_key_env") => {
+                current.insert("api_key_env".into(), json!(quoted));
+            }
+            ("backend", "probe") => {
+                current.insert("probe".into(), json!(value == "true"));
+            }
+            ("backend", "aliases") => {
+                let pairs = value
+                    .trim_matches(['{', '}'])
+                    .split(',')
+                    .filter(|pair| !pair.trim().is_empty())
+                    .count();
+                current.insert("aliases".into(), json!(pairs));
+            }
+            _ => {}
+        }
+    }
+    push_bifrost_section(&kind, current, &mut users, &mut backends);
+
+    for backend in backends.iter_mut() {
+        let name = backend["name"].as_str().unwrap_or("").to_owned();
+        let label = match name.as_str() {
+            "local" => "This Mac",
+            "agora" => "Agora",
+            "loki" => "Loki",
+            "fpl-cloud" => "FPL Cloud",
+            other => other,
+        };
+        let base_url = backend["base_url"].as_str().map(str::to_owned);
+        let env = backend["api_key_env"].as_str().map(str::to_owned);
+        if let Some(fields) = backend.as_object_mut() {
+            fields.insert("label".into(), json!(label));
+            let reachable = base_url
+                .and_then(|url| {
+                    let (host, port) = split_http(&url)?;
+                    Some(probe_tcp(
+                        &format!("{host}:{port}"),
+                        Duration::from_millis(350),
+                    ))
+                })
+                .unwrap_or(false);
+            fields.insert("reachable".into(), json!(reachable));
+            if let Some(env) = env {
+                fields.insert("env_present".into(), json!(std::env::var_os(env).is_some()));
+            }
+        }
+    }
+    json!({"users": users, "backends": backends})
+}
+
 fn connectors(state: &FrontdoorState) -> Value {
     let home = home_dir();
     let config = config_home();
@@ -1065,7 +1315,10 @@ fn connectors(state: &FrontdoorState) -> Value {
             "upstreams": upstreams("ai"),
             "reachable": probe_tcp("127.0.0.1:4000", Duration::from_millis(350)),
             "keys": ai_keys,
-            "local_config": file_note(&config.join("bifrost-local/bifrost.toml")),
+            "config": file_note(&config.join("bifrost-local/bifrost.toml")),
+            "bifrost": std::fs::read_to_string(config.join("bifrost-local/bifrost.toml"))
+                .map(|text| parse_bifrost(&text))
+                .unwrap_or_else(|_| json!({"users": [], "backends": []})),
         },
         "mcp": {
             "link": link("mcp"),
