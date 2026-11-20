@@ -31,14 +31,20 @@ const MAX_METERED_BODY_BYTES: usize = 32 * 1024 * 1024;
 const USAGE_PERSIST_SECS: u64 = 15;
 
 #[derive(Clone)]
-struct FrontdoorState {
-    client: reqwest::Client,
-    table: Arc<std::sync::RwLock<RouteTable>>,
-    services: Arc<std::sync::RwLock<ServiceIndex>>,
-    usage: Arc<UsageStore>,
-    metering: MeteringConfig,
-    auth_token: Option<Arc<str>>,
-    forwarded_proto: &'static str,
+pub(crate) struct FrontdoorState {
+    pub(crate) client: reqwest::Client,
+    pub(crate) table: Arc<std::sync::RwLock<RouteTable>>,
+    pub(crate) services: Arc<std::sync::RwLock<ServiceIndex>>,
+    pub(crate) usage: Arc<UsageStore>,
+    pub(crate) metering: MeteringConfig,
+    pub(crate) auth_token: Option<Arc<str>>,
+    pub(crate) forwarded_proto: &'static str,
+    /// The binary the dashboard uses for `--json` reads and `--write` verbs.
+    pub(crate) mycelium_bin: Option<PathBuf>,
+    /// The route file the dashboard edits, when one was passed.
+    pub(crate) config_path: Option<PathBuf>,
+    /// Hosts answered by the built-in dashboard rather than a proxy route.
+    pub(crate) dashboard_hosts: Arc<std::sync::RwLock<BTreeSet<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +163,9 @@ pub async fn run_with_options(
     }
 
     let forwarded_proto = if tls.is_some() { "https" } else { "http" };
+    let dashboard_hosts = Arc::new(std::sync::RwLock::new(crate::dashboard::normalized_hosts(
+        &config.dashboard.hosts,
+    )));
     let state = FrontdoorState {
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
@@ -168,10 +177,20 @@ pub async fn run_with_options(
         metering: config.metering.clone(),
         auth_token: auth_token.map(Arc::from),
         forwarded_proto,
+        mycelium_bin: config.mycelium_bin.clone(),
+        config_path: config_path.clone(),
+        dashboard_hosts: dashboard_hosts.clone(),
     };
 
     if let (Some(path), true) = (config_path, reload_secs > 0) {
-        spawn_reload(path, table, initial_mtime, reload_secs, services_for_reload);
+        spawn_reload(
+            path,
+            table,
+            initial_mtime,
+            reload_secs,
+            services_for_reload,
+            dashboard_hosts,
+        );
     }
 
     // Bind every address before serving any of them. A frontdoor that came up on
@@ -347,6 +366,7 @@ fn spawn_reload(
     mut last_mtime: Option<std::time::SystemTime>,
     reload_secs: u64,
     services: Arc<std::sync::RwLock<ServiceIndex>>,
+    dashboard_hosts: Arc<std::sync::RwLock<BTreeSet<String>>>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -360,10 +380,12 @@ fn spawn_reload(
             last_mtime = current;
             match FrontdoorConfig::load(&path) {
                 Ok(config) => {
+                    let hosts = crate::dashboard::normalized_hosts(&config.dashboard.hosts);
                     let index = services.read().unwrap().clone();
                     let mut table = table.write().unwrap();
                     *table = RouteTable::new(config.routes, config.default_route);
                     table.set_discovered(&index);
+                    *dashboard_hosts.write().unwrap() = hosts;
                     eprintln!("mycelium-frontdoor: reloaded {}", path.display());
                 }
                 Err(error) => {
@@ -485,6 +507,12 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
     }
 
     let host = request_host(&request);
+    // `home.myc` is the built-in dashboard, not a discovered `home` service.
+    // The check is before route selection so the old soil-home launcher (and a
+    // stale `home` route in an installed config) cannot win.
+    if state.dashboard_hosts.read().unwrap().contains(&host) {
+        return crate::dashboard::handle(&state, request).await;
+    }
     let Some(route) = state.table.read().unwrap().select(&host) else {
         return text(StatusCode::NOT_FOUND, "no route");
     };

@@ -51,12 +51,34 @@ impl Default for MeteringConfig {
     }
 }
 
+/// The built-in dashboard. It is served by the frontdoor itself, so `home.myc`
+/// no longer needs a discovered `home` service (or the old soil-home launcher).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DashboardConfig {
+    pub hosts: Vec<String>,
+}
+
+fn default_dashboard_hosts() -> Vec<String> {
+    vec!["home.myc".into()]
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            hosts: default_dashboard_hosts(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FrontdoorConfig {
     #[serde(default)]
     pub routes: Vec<Route>,
     #[serde(default)]
     pub default_route: Option<String>,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
     /// Binary used to read `node status` and `services` from myceliumd.
     /// Required when any route uses `service_kind`.
     #[serde(default)]
@@ -92,6 +114,7 @@ impl Default for FrontdoorConfig {
         Self {
             routes: Vec::new(),
             default_route: None,
+            dashboard: DashboardConfig::default(),
             mycelium_bin: None,
             service_refresh_secs: default_service_refresh_secs(),
             metering: MeteringConfig::default(),
@@ -126,7 +149,7 @@ impl FrontdoorConfig {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         if self.routes.is_empty() {
             return Err(ConfigError::Validation("no routes configured".into()));
         }

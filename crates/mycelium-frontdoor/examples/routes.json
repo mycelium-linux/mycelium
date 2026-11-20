@@ -4,29 +4,37 @@
   "routes": [
     {
       "name": "bifrost",
-      "hosts": ["ai.myc", "api.myc"],
+      "hosts": [
+        "ai.myc",
+        "api.myc"
+      ],
       "upstream": "http://127.0.0.1:4000",
       "service_kind": "ai",
       "priority": 10
     },
     {
       "name": "mcp",
-      "hosts": ["mcp.myc", "*.mcp"],
+      "hosts": [
+        "mcp.myc",
+        "*.mcp"
+      ],
       "upstream": "http://127.0.0.1:8000",
       "service_kind": "mcp",
       "priority": 10
     },
     {
-      "name": "home",
-      "hosts": ["home.myc", "*.home"],
-      "service_kind": "home",
-      "priority": 10
-    },
-    {
       "name": "webhook",
-      "hosts": ["webhook.myc", "confluence.myc"],
+      "hosts": [
+        "webhook.myc",
+        "confluence.myc"
+      ],
       "upstream": "http://127.0.0.1:8090",
       "priority": 10
     }
-  ]
+  ],
+  "dashboard": {
+    "hosts": [
+      "home.myc"
+    ]
+  }
 }

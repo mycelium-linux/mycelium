@@ -41,7 +41,7 @@ should be a Spore where the runtime already provides the capability.
 | Artifact | Source | Installer role | Required | Boundary | Notes |
 |---|---|---|---|---|---|
 | `soil` (`soil-shell`) | `mycelium-linux/soil` | CLI/shell | Soil | host process, VFS, terminal | Keep native as the host shell. |
-| `soil-home` | soil runtime artifact | Home/namespace web view | Soil | HTTP + route file | Strong Spore candidate: rendering and route presentation can run in `soil-http-host`; the host grants file/route access. |
+| `soil-home` | soil runtime artifact | Retired for `home.myc`; the frontdoor serves the Mycelium dashboard there now ([dashboard.md](dashboard.md)). | — | — | Kept only for installs that still launch it. |
 | `soil-store` | soil runtime artifact | Spore storefront and package verifier | Soil | HTTP + package files + signing | Split: storefront/listing can become a Spore; key custody, signing, and install approval stay native. |
 | `soil-spore` | soil | Spore pack/sign/verify CLI | build tool | filesystem, signing keys | Keep native: it is the packaging/signing boundary. |
 | `files-serve` | soil runtime artifact | Small static file server | optional | filesystem + HTTP | Strong Spore or `soil-http-host` candidate; eliminate a process if the host already serves static routes. |

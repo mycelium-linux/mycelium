@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mycelium</title>
+<style>
+:root{
+  --bg:#0b120f;--panel:#111d17;--panel-2:#16241c;--line:#24352b;--line-2:#31463a;
+  --ink:#e7efdf;--muted:#93a68a;--dim:#6c8064;
+  --accent:#b9cda1;--accent-2:#7f9a6c;--glow:#cfe3b6;
+  --ok:#7fd6a0;--warn:#e6c56a;--bad:#e08b7f;--shadow:0 18px 50px rgba(0,0,0,.45);
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+html[data-theme="light"]{
+  --bg:#f3f1e9;--panel:#fbfaf4;--panel-2:#f0eee4;--line:#dfdccd;--line-2:#cdc9b8;
+  --ink:#1d251f;--muted:#5f6d57;--dim:#7d8a73;--accent:#3c5a3a;--accent-2:#5d7a52;
+  --glow:#3c5a3a;--ok:#2c7a4e;--warn:#8a6a12;--bad:#9c3b30;--shadow:0 18px 50px rgba(30,40,30,.12);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:radial-gradient(1200px 700px at 22% -10%,#16241c 0%,var(--bg) 55%) no-repeat,var(--bg);
+  color:var(--ink);font:14px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+a{color:var(--accent)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+header{
+  display:flex;align-items:center;gap:14px;padding:16px 26px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(20,32,25,.75),rgba(11,18,15,0));position:sticky;top:0;z-index:5;
+  backdrop-filter:blur(10px);
+}
+.brand{display:flex;align-items:center;gap:11px;min-width:0}
+.brand svg{width:34px;height:34px;filter:drop-shadow(0 0 10px rgba(185,205,161,.25))}
+.brand h1{margin:0;font:600 19px/1.1 ui-serif,Georgia,serif;letter-spacing:-.02em}
+.brand .sub{color:var(--muted);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;
+  padding:4px 10px;font-size:11px;color:var(--muted);background:rgba(255,255,255,.02)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 8px rgba(127,214,160,.5)}
+.dot.warn{background:var(--warn)}
+.dot.bad{background:var(--bad)}
+.shell{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:calc(100vh - 67px)}
+nav{padding:18px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+nav button{
+  display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:0;background:transparent;
+  color:var(--muted);padding:9px 11px;border-radius:8px;font-size:13px;
+}
+nav button:hover{background:var(--panel-2);color:var(--ink)}
+nav button.active{background:var(--panel-2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+nav .navlabel{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:8px 11px 4px}
+nav .foot{margin-top:auto;font-size:10px;color:var(--dim);padding:10px 11px;line-height:1.5}
+main{padding:26px 30px 60px;min-width:0}
+section{display:none;animation:fade .16s ease}
+section.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+h2{margin:0 0 4px;font:600 20px/1.2 ui-serif,Georgia,serif;letter-spacing:-.02em}
+.lede{color:var(--muted);font-size:12.5px;margin:0 0 20px;max-width:760px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 16px}
+.card .k{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+.card .v{font-size:17px;font-weight:600;line-height:1.25;word-break:break-word}
+.card .m{color:var(--muted);font-size:11.5px;margin-top:5px}
+.card.wide{grid-column:1/-1}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{position:sticky;top:0;background:var(--panel-2);text-align:left;font-size:9.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line);font-weight:600}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tr:hover td{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-size:11px}
+.muted{color:var(--muted)}
+.dim{color:var(--dim)}
+.btn{border:1px solid var(--line-2);background:var(--panel-2);border-radius:8px;padding:7px 12px;font-size:12px}
+.btn:hover{border-color:var(--accent-2);color:var(--ink)}
+.btn.primary{background:var(--accent);color:#16241c;border-color:var(--accent)}
+.btn.primary:hover{background:var(--glow);color:#0b120f}
+.btn.danger{border-color:#4a2b2b;color:var(--bad)}
+.btn.small{padding:4px 8px;font-size:11px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+input,select,textarea{
+  background:var(--bg);border:1px solid var(--line-2);border-radius:8px;padding:7px 9px;font-size:12.5px;
+  width:100%;outline:none;
+}
+input:focus,select:focus,textarea:focus{border-color:var(--accent-2);box-shadow:0 0 0 3px rgba(127,154,108,.16)}
+textarea{font-family:var(--mono);font-size:11.5px;line-height:1.5;resize:vertical;min-height:240px}
+label{display:block;font-size:11px;color:var(--muted);margin:0 0 4px}
+.field{margin-bottom:12px}
+.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:11px 0;border-bottom:1px solid var(--line)}
+.toggle:last-child{border-bottom:0}
+.toggle .t{font-size:12.5px}
+.toggle .s{font-size:11px;color:var(--muted);margin-top:1px}
+.switch{appearance:none;width:38px;height:22px;border-radius:999px;background:var(--line-2);position:relative;flex:none;transition:.15s}
+.switch:checked{background:var(--accent-2)}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#eef3e7;transition:.15s}
+.switch:checked::after{left:19px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.empty{color:var(--dim);padding:22px 4px;font-size:12.5px}
+.err{color:var(--bad);font-size:11.5px}
+.ok{color:var(--ok)}
+.tag{font-size:10px;border:1px solid var(--line-2);border-radius:999px;padding:1px 7px;color:var(--muted)}
+.tag.on{color:var(--ok);border-color:#2f5a41}
+.tag.off{color:var(--dim)}
+#toast{position:fixed;right:22px;bottom:22px;display:flex;flex-direction:column;gap:8px;z-index:20}
+.toast{background:var(--panel-2);border:1px solid var(--line-2);border-left:3px solid var(--accent);
+  border-radius:8px;padding:10px 14px;font-size:12px;box-shadow:var(--shadow);max-width:380px}
+.toast.bad{border-left-color:var(--bad)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.hint{font-size:11px;color:var(--dim);margin-top:8px}
+pre.json{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font:11px/1.5 var(--mono);max-height:280px}
+@media(max-width:760px){
+  .shell{grid-template-columns:1fr}
+  nav{flex-direction:row;overflow:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px}
+  nav .navlabel,nav .foot{display:none}
+  main{padding:18px}
+  header{padding:12px 16px}
+}
+@media(prefers-color-scheme:light){
+  html[data-theme="auto"]{
+    --bg:#f3f1e9;--panel:#fbfaf4;--panel-2:#f0eee4;--line:#dfdccd;--line-2:#cdc9b8;
+    --ink:#1d251f;--muted:#5f6d57;--dim:#7d8a73;--accent:#3c5a3a;--accent-2:#5d7a52;
+    --glow:#3c5a3a;--ok:#2c7a4e;--warn:#8a6a12;--bad:#9c3b30;--shadow:0 18px 50px rgba(30,40,30,.12);
+  }
+  html[data-theme="auto"] body{background:var(--bg)}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 1024 1024" aria-hidden="true">
+      <rect width="1024" height="1024" rx="224" fill="#13201a"/>
+      <g fill="none" stroke="#c9dbb4" stroke-width="60" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M300 716 L358 358 Q366 322 398 350 L512 560 L626 350 Q658 322 666 358 L724 716"/>
+      </g>
+      <g fill="#e9f1dc">
+        <circle cx="366" cy="344" r="30"/><circle cx="512" cy="552" r="30"/><circle cx="658" cy="344" r="30"/>
+        <circle cx="232" cy="260" r="22"/><circle cx="792" cy="260" r="22"/><circle cx="512" cy="766" r="22"/>
+      </g>
+    </svg>
+    <div>
+      <h1>Mycelium</h1>
+      <div class="sub" id="identity">connecting…</div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="daemon-pill"><span class="dot" id="daemon-dot"></span><span id="daemon-text">daemon</span></span>
+  <span class="pill" id="updated">—</span>
+  <button class="btn" id="refresh">Refresh</button>
+</header>
+
+<div class="shell">
+  <nav id="nav">
+    <div class="navlabel">Machine</div>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="fleet">Fleet members</button>
+    <button data-tab="geode">Geode</button>
+    <button data-tab="vfs">Desktops &amp; VFS</button>
+    <button data-tab="pulse">Pulse</button>
+    <div class="navlabel">Configure</div>
+    <button data-tab="settings">Settings</button>
+    <div class="foot" id="frontdoor-foot"></div>
+  </nav>
+
+  <main>
+    <section id="tab-overview" class="active">
+      <h2>This machine</h2>
+      <p class="lede">One view of what Mycelium is running here. Status is read from the daemon; anything deeper opens where it belongs.</p>
+      <div class="grid" id="overview-cards"><div class="empty">Loading…</div></div>
+      <div class="card wide" style="margin-top:14px">
+        <div class="k">Quick actions</div>
+        <div class="actions">
+          <button class="btn" data-action="daemon-start">Start daemon</button>
+          <button class="btn" data-action="daemon-stop">Stop daemon</button>
+          <button class="btn" data-action="tunnel-restart">Restart tunnel</button>
+          <button class="btn" data-action="relays-enable">Public relays on</button>
+          <button class="btn" data-action="relays-disable">Public relays off</button>
+        </div>
+        <div class="hint">Writes run the same <span class="mono">mycelium … --write</span> commands the terminal does.</div>
+      </div>
+    </section>
+
+    <section id="tab-fleet">
+      <h2>Fleet members</h2>
+      <p class="lede">Peers enrolled in this mesh, newest heartbeat first. Sites and versions come from the signed peer hello.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Host</th><th>Site</th><th>Last seen</th><th>Daemon</th><th>SSH</th></tr></thead>
+        <tbody id="fleet-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </section>
+
+    <section id="tab-geode">
+      <h2>Geode</h2>
+      <p class="lede">The owner-local credential broker. This page reports whether it is live and whether its store is private; it never leases a secret.</p>
+      <div class="stack" id="geode-panel"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section id="tab-vfs">
+      <h2>Desktops &amp; VFS</h2>
+      <p class="lede">The content roots this machine mounts, and the Canvas surfaces installed beside them.</p>
+      <div class="stack">
+        <div class="card">
+          <div class="k">VFS roots</div>
+          <div class="tablewrap" style="margin-top:10px"><table>
+            <thead><tr><th>Path</th><th>Mounted</th><th>Top-level entries</th></tr></thead>
+            <tbody id="vfs-roots"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="k">Desktop surfaces</div>
+          <div class="tablewrap" style="margin-top:10px"><table>
+            <thead><tr><th>Spore</th><th>Id</th><th>Path</th></tr></thead>
+            <tbody id="vfs-desktops"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+          </table></div>
+          <div class="hint">A surface is a Spore that declares <span class="mono">soil:canvas</span> or <span class="mono">soil:present</span>.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-pulse">
+      <h2>Pulse</h2>
+      <p class="lede">Schedules the daemon owns and runs. A pulse is not a Spore: it needs the daemon's authority and its own durable run history.</p>
+      <div class="split">
+        <div class="card">
+          <div class="k">User pulses</div>
+          <div class="tablewrap" style="margin-top:10px"><table>
+            <thead><tr><th>Id</th><th>Schedule</th><th>Command</th><th></th></tr></thead>
+            <tbody id="pulse-user"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="k">Add a pulse</div>
+          <div class="field" style="margin-top:10px"><label>Schedule (cron)</label><input id="p-schedule" placeholder="*/15 * * * *" autocomplete="off"></div>
+          <div class="field"><label>Command</label><input id="p-command" placeholder="mycelium doctor" autocomplete="off"></div>
+          <div class="formgrid">
+            <div class="field"><label>Id (optional)</label><input id="p-id" placeholder="doctor" autocomplete="off"></div>
+            <div class="field"><label>Timeout (seconds)</label><input id="p-timeout" type="number" min="5" max="86400" placeholder="300"></div>
+          </div>
+          <div class="row"><button class="btn primary" id="p-add">Add pulse</button><span class="hint">Runs with the daemon's authority.</span></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="k">System pulses</div>
+        <div class="tablewrap" style="margin-top:10px"><table>
+          <thead><tr><th>Id</th><th>Interval</th><th>What it does</th></tr></thead>
+          <tbody id="pulse-system"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+        </table></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="k">Recent runs</div>
+        <div class="tablewrap" style="margin-top:10px"><table>
+          <thead><tr><th>Pulse</th><th>Outcome</th><th>Finished</th><th>Detail</th></tr></thead>
+          <tbody id="pulse-runs"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table></div>
+        <div class="actions"><button class="btn small" id="p-runs-reload">Reload runs</button></div>
+      </div>
+    </section>
+
+    <section id="tab-settings">
+      <h2>Settings</h2>
+      <p class="lede">Options the host can actually apply. Each save runs the matching command or writes the file the daemon reloads.</p>
+      <div class="split">
+        <div class="card">
+          <div class="k">Dashboard</div>
+          <div class="field" style="margin-top:10px"><label>Refresh interval (seconds)</label><input id="s-refresh" type="number" min="3" max="300"></div>
+          <div class="field"><label>Theme</label>
+            <select id="s-theme"><option value="auto">Match the system</option><option value="dark">Dark</option><option value="light">Light</option></select>
+          </div>
+          <div class="toggle">
+            <div><div class="t">Public Iroh relays</div><div class="s">When off, sync uses direct paths only.</div></div>
+            <input class="switch" type="checkbox" id="s-relays">
+          </div>
+          <div class="actions"><button class="btn primary" id="s-save">Save settings</button></div>
+          <div class="hint" id="s-path"></div>
+        </div>
+        <div class="card">
+          <div class="k">Frontdoor routes</div>
+          <p class="hint" style="margin:6px 0 10px">The table the frontdoor reloads. Saving validates with the same deserializer the daemon uses.</p>
+          <textarea id="routes-text" spellcheck="false"></textarea>
+          <div class="actions">
+            <button class="btn primary" id="routes-save">Save routes</button>
+            <button class="btn" id="routes-reload">Reload</button>
+          </div>
+          <div class="hint" id="routes-path"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="k">What stays out of this page</div>
+        <p class="lede" style="margin-bottom:0">Geode leases, VFS mounts and node reconciliation are operator authority with their own confirmation paths. The dashboard reports them and links to the command that changes them; it does not put a secret or a mount behind a browser form.</p>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+}[c]));
+const short = (value, n = 14) => {
+  const text = String(value ?? "");
+  return text.length > n ? text.slice(0, n) + "…" : text;
+};
+const when = (ms) => {
+  if (!ms) return "—";
+  const date = new Date(Number(ms));
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+};
+const ago = (seconds) => {
+  const value = Number(seconds) || 0;
+  if (value <= 0) return "never";
+  const now = Date.now() / 1000;
+  const delta = now - value;
+  if (delta < 5) return "now";
+  if (delta < 90) return Math.round(delta) + "s ago";
+  if (delta < 5400) return Math.round(delta / 60) + "m ago";
+  if (delta < 172800) return Math.round(delta / 3600) + "h ago";
+  return Math.round(delta / 86400) + "d ago";
+};
+const bytes = (n) => {
+  const value = Number(n) || 0;
+  if (value < 1024) return value + " B";
+  if (value < 1024 ** 2) return (value / 1024).toFixed(1) + " KiB";
+  if (value < 1024 ** 3) return (value / 1024 ** 2).toFixed(1) + " MiB";
+  return (value / 1024 ** 3).toFixed(1) + " GiB";
+};
+
+let summary = null;
+let timer = null;
+let activeTab = "overview";
+let lastRefreshMs = 0;
+
+function toast(message, bad = false) {
+  const box = document.createElement("div");
+  box.className = "toast" + (bad ? " bad" : "");
+  box.textContent = message;
+  $("toast").appendChild(box);
+  setTimeout(() => box.remove(), bad ? 7000 : 3500);
+}
+
+async function api(path, options = {}) {
+  const headers = { "x-mycelium-dashboard": "1" };
+  if (options.body) headers["content-type"] = "application/json";
+  const response = await fetch(path, { ...options, headers: { ...headers, ...(options.headers || {}) } });
+  const text = await response.text();
+  let value = null;
+  try { value = text ? JSON.parse(text) : null; } catch { value = { ok: false, error: text }; }
+  if (!response.ok) throw new Error(value?.error || response.statusText);
+  return value;
+}
+
+function section(result) { return result && result.ok ? result.value : null; }
+function hello() {
+  const node = section(summary?.node);
+  return node?.node?.hello || node?.hello || null;
+}
+function fleetRows() {
+  const rows = section(summary?.fleet);
+  return Array.isArray(rows) ? rows : [];
+}
+function tunnel() { return section(summary?.tunnel); }
+function pulseList() {
+  const value = section(summary?.pulse) || {};
+  return { system: value.system || [], user: value.user || [] };
+}
+function daemonUp() { return summary?.node?.ok === true; }
+
+function applyTheme() {
+  const theme = summary?.settings?.theme || "auto";
+  document.documentElement.dataset.theme = theme;
+}
+
+function renderChrome() {
+  const h = hello();
+  $("identity").textContent = h
+    ? [h.hostname, h.site, short(h.node_id, 10)].filter(Boolean).join(" · ")
+    : (summary?.node?.error || "daemon not reachable");
+  const up = daemonUp();
+  $("daemon-dot").className = "dot " + (up ? "ok" : "bad");
+  $("daemon-text").textContent = up ? "daemon running" : "daemon stopped";
+  $("updated").textContent = "updated " + new Date(lastRefreshMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const fd = summary?.frontdoor || {};
+  $("frontdoor-foot").innerHTML = `${fd.routes || 0} routes · ${fd.tls ? "TLS" : "plain"} · ${fd.auth_required ? "token" : "no token"}`;
+}
+
+function renderOverview() {
+  const h = hello();
+  const t = tunnel() || {};
+  const fd = summary?.frontdoor || {};
+  const geode = summary?.geode || {};
+  const pulses = pulseList();
+  const enabled = pulses.user.filter((p) => p.enabled !== false).length;
+
+  const overlay = Array.isArray(t.overlay) && t.overlay.length ? t.overlay.join(", ") : (t.enabled ? "no overlay" : "not configured");
+  const tunnelState = !t.enabled ? "not configured" : t.running ? (t.publishing ? "running · publishing" : "running") : "configured · stopped";
+
+  const cards = [
+    {
+      k: "Daemon",
+      v: daemonUp() ? "Running" : "Stopped",
+      m: h ? `${h.platform || "?"}/${h.architecture || "?"} · v${h.daemon_version || "?"}` : (summary?.node?.error || ""),
+      cls: daemonUp() ? "ok" : "err",
+    },
+    {
+      k: "Overlay",
+      v: t.enabled ? (t.running ? "Up" : "Down") : "Off",
+      m: overlay + (t.config_error ? ` · ${t.config_error}` : ""),
+      cls: t.running ? "ok" : (t.enabled ? "err" : "muted"),
+    },
+    {
+      k: "Frontdoor",
+      v: fd.routes ? `${fd.routes} routes` : "—",
+      m: `${fd.derived_routes || 0} derived · ${fd.tls ? "TLS" : "plain"}${fd.auth_required ? " · token" : ""}`,
+    },
+    {
+      k: "Fleet peers",
+      v: fleetRows().length,
+      m: fleetRows().filter((p) => (p.last_seen || 0) > Date.now() / 1000 - 300).length + " seen in the last 5 min",
+    },
+    {
+      k: "Geode",
+      v: geode.running ? "Running" : "Stopped",
+      m: geode.store_bytes ? `${bytes(geode.store_bytes)} store${geode.key_private ? " · key private" : ""}` : "no store yet",
+      cls: geode.running ? "ok" : "muted",
+    },
+    {
+      k: "Pulse",
+      v: `${enabled}/${pulses.user.length}`,
+      m: `${pulses.system.length} system schedules`,
+    },
+  ];
+  $("overview-cards").innerHTML = cards.map((c) => `
+    <div class="card">
+      <div class="k">${esc(c.k)}</div>
+      <div class="v ${c.cls || ""}">${esc(c.v)}</div>
+      <div class="m">${esc(c.m)}</div>
+    </div>`).join("");
+}
+
+function renderFleet() {
+  const rows = fleetRows();
+  $("fleet-body").innerHTML = rows.length ? rows.map((peer) => {
+    const secure = peer.ssh_listening;
+    return `<tr>
+      <td><strong>${esc(peer.hostname || "unknown")}</strong><div class="mono dim">${esc(short(peer.node_id, 16))}</div></td>
+      <td>${esc(peer.site || "—")}</td>
+      <td>${esc(ago(peer.last_seen))}</td>
+      <td class="mono">${esc(peer.daemon_version || "?")}</td>
+      <td>${secure === true ? '<span class="tag on">listening</span>' : secure === false ? '<span class="tag off">closed</span>' : '<span class="tag">unknown</span>'}</td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="5" class="empty">No peers enrolled yet.</td></tr>';
+}
+
+function renderGeode() {
+  const g = summary?.geode || {};
+  $("geode-panel").innerHTML = `
+    <div class="grid">
+      <div class="card"><div class="k">Broker</div><div class="v ${g.running ? "ok" : "muted"}">${g.running ? "Running" : "Stopped"}</div>
+        <div class="m">${g.running ? "accepting leases on the owner's socket" : "no process is answering"}</div></div>
+      <div class="card"><div class="k">Store</div><div class="v">${bytes(g.store_bytes)}</div>
+        <div class="m mono">${esc(g.store || "—")}</div></div>
+      <div class="card"><div class="k">Key</div><div class="v ${g.key_private ? "ok" : "err"}">${g.key_present ? (g.key_private ? "Private (0600)" : "Present, wrong mode") : "Missing"}</div>
+        <div class="m">The broker never hands the key to a client.</div></div>
+    </div>
+    <div class="card">
+      <div class="k">Socket</div>
+      <div class="mono" style="margin-top:4px">${esc(g.socket || "—")}</div>
+      <p class="hint">Geode is read-only over its socket: a caller leases one reference for one purpose and TTL. Storing, rotating and deleting a secret stay operator actions. Browser forms do not belong here.</p>
+    </div>`;
+}
+
+function renderVfs() {
+  const v = summary?.vfs || {};
+  const roots = v.roots || [];
+  $("vfs-roots").innerHTML = roots.length ? roots.map((root) => `
+    <tr><td class="mono">${esc(root.path)}</td>
+      <td>${root.mounted ? '<span class="tag on">mounted</span>' : '<span class="tag off">not mounted</span>'}</td>
+      <td>${esc(root.entries)}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="empty">No VFS roots found. Pass <span class="mono">--vfs-root</span> to the installer.</td></tr>';
+  const desktops = v.desktops || [];
+  $("vfs-desktops").innerHTML = desktops.length ? desktops.map((spore) => `
+    <tr><td><strong>${esc(spore.title || spore.name || spore.id)}</strong></td>
+      <td class="mono">${esc(spore.id)}</td>
+      <td class="mono dim">${esc(spore.path)}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="empty">No Canvas surfaces installed.</td></tr>';
+}
+
+function renderPulse() {
+  const pulses = pulseList();
+  $("pulse-user").innerHTML = pulses.user.length ? pulses.user.map((pulse) => `
+    <tr>
+      <td class="mono">${esc(pulse.id)}</td>
+      <td class="mono">${esc(pulse.schedule)}</td>
+      <td class="mono dim">${esc(pulse.command)}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn small" data-pulse-toggle="${esc(pulse.id)}">${pulse.enabled === false ? "Enable" : "Disable"}</button>
+        <button class="btn small danger" data-pulse-remove="${esc(pulse.id)}">Remove</button>
+      </td>
+    </tr>`).join("") : '<tr><td colspan="4" class="empty">No user pulses.</td></tr>';
+  $("pulse-system").innerHTML = pulses.system.length ? pulses.system.map((pulse) => `
+    <tr><td class="mono">${esc(pulse.id)}</td><td class="mono">${esc(pulse.interval_secs)}s</td><td>${esc(pulse.description)}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="empty">No system pulses.</td></tr>';
+}
+
+function renderRuns(runs) {
+  $("pulse-runs").innerHTML = runs && runs.length ? runs.map((run) => `
+    <tr><td class="mono">${esc(run.pulse_id)}</td>
+      <td class="${run.outcome === "ok" || run.outcome === "success" ? "ok" : "err"}">${esc(run.outcome)}</td>
+      <td>${esc(when(run.finished_at_ms))}</td>
+      <td class="mono dim">${esc(short(run.detail, 120))}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="empty">No runs recorded.</td></tr>';
+}
+
+function renderSettings() {
+  const s = summary?.settings || {};
+  $("s-refresh").value = s.refresh_secs ?? 10;
+  $("s-theme").value = s.theme || "auto";
+  $("s-relays").checked = s.public_relays === true;
+  $("s-path").textContent = summary?.settings_path || "";
+}
+
+function renderAll() {
+  applyTheme();
+  renderChrome();
+  renderOverview();
+  renderFleet();
+  renderGeode();
+  renderVfs();
+  renderPulse();
+  renderSettings();
+}
+
+async function load({ silent = false } = {}) {
+  try {
+    summary = await api("/api/summary");
+    lastRefreshMs = Date.now();
+    renderAll();
+    schedule();
+    if (!silent && summary?.node && !summary.node.ok) toast("Daemon: " + summary.node.error, true);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function loadRuns() {
+  try {
+    const value = await api("/api/pulse/runs");
+    renderRuns(value?.runs || []);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function loadRoutes() {
+  try {
+    const value = await api("/api/routes");
+    const data = value?.routes || {};
+    $("routes-text").value = JSON.stringify(data, null, 2);
+    $("routes-path").textContent = value?.path || "";
+    if (value && value.ok === false) toast(value.error, true);
+  } catch (error) { toast(error.message, true); }
+}
+
+function schedule() {
+  clearTimeout(timer);
+  const secs = Math.max(3, Math.min(300, Number(summary?.settings?.refresh_secs) || 10));
+  timer = setTimeout(() => { if (!document.hidden) load({ silent: true }); else schedule(); }, secs * 1000);
+}
+
+async function action(name) {
+  try {
+    const value = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: name }) });
+    if (value?.ok === false) throw new Error(value.error || "action failed");
+    toast(value?.output || "done");
+    await load({ silent: true });
+  } catch (error) { toast(error.message, true); }
+}
+
+// --- navigation
+$("nav").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-tab]");
+  if (!button) return;
+  activeTab = button.dataset.tab;
+  document.querySelectorAll("#nav button[data-tab]").forEach((item) => item.classList.toggle("active", item === button));
+  document.querySelectorAll("main section").forEach((section) => section.classList.toggle("active", section.id === "tab-" + activeTab));
+  if (activeTab === "settings") loadRoutes();
+  if (activeTab === "pulse") loadRuns();
+});
+
+$("refresh").addEventListener("click", () => load());
+$("p-runs-reload").addEventListener("click", loadRuns);
+$("routes-reload").addEventListener("click", loadRoutes);
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load({ silent: true }); });
+
+document.addEventListener("click", async (event) => {
+  const actionButton = event.target.closest("[data-action]");
+  if (actionButton) {
+    actionButton.disabled = true;
+    try { await action(actionButton.dataset.action); } finally { actionButton.disabled = false; }
+    return;
+  }
+  const toggle = event.target.closest("[data-pulse-toggle]");
+  if (toggle) {
+    try {
+      const value = await api("/api/pulse/toggle", { method: "POST", body: JSON.stringify({ id: toggle.dataset.pulseToggle }) });
+      if (value?.ok === false) throw new Error(value.error);
+      await load({ silent: true });
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
+  const remove = event.target.closest("[data-pulse-remove]");
+  if (remove) {
+    const id = remove.dataset.pulseRemove;
+    if (!confirm(`Remove pulse “${id}”?`)) return;
+    try {
+      const value = await api("/api/pulse/remove", { method: "POST", body: JSON.stringify({ id }) });
+      if (value?.ok === false) throw new Error(value.error);
+      toast("removed " + id);
+      await load({ silent: true });
+    } catch (error) { toast(error.message, true); }
+  }
+});
+
+$("p-add").addEventListener("click", async () => {
+  const schedule = $("p-schedule").value.trim();
+  const command = $("p-command").value.trim();
+  if (!schedule || !command) return toast("schedule and command are required", true);
+  const payload = { schedule, command };
+  const id = $("p-id").value.trim();
+  if (id) payload.id = id;
+  const timeout = Number($("p-timeout").value);
+  if (timeout) payload.timeout_secs = timeout;
+  try {
+    const value = await api("/api/pulse", { method: "POST", body: JSON.stringify(payload) });
+    if (value?.ok === false) throw new Error(value.error);
+    $("p-schedule").value = ""; $("p-command").value = ""; $("p-id").value = ""; $("p-timeout").value = "";
+    toast("pulse added");
+    await load({ silent: true });
+  } catch (error) { toast(error.message, true); }
+});
+
+$("s-save").addEventListener("click", async () => {
+  const payload = {
+    refresh_secs: Number($("s-refresh").value) || 10,
+    theme: $("s-theme").value,
+    public_relays: $("s-relays").checked,
+  };
+  try {
+    const value = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    if (value?.ok === false) throw new Error(value.error);
+    toast("settings saved");
+    await load();
+  } catch (error) { toast(error.message, true); }
+});
+
+$("routes-save").addEventListener("click", async () => {
+  let parsed;
+  try {
+    parsed = JSON.parse($("routes-text").value);
+  } catch (error) {
+    return toast("routes are not valid JSON: " + error.message, true);
+  }
+  try {
+    const value = await api("/api/routes", { method: "PUT", body: JSON.stringify(parsed) });
+    if (value?.ok === false) throw new Error(value.error);
+    toast("routes saved; the frontdoor reloads them");
+    await load({ silent: true });
+  } catch (error) { toast(error.message, true); }
+});
+
+load();
+loadRuns();
+</script>
+</body>
+</html>

@@ -76,6 +76,10 @@ if they must start before a login session exists.
 | Geode (opt-in) | Installs the `geoded` broker and a user service with a private store under `~/.geode`. Re-run with `--geode` to upgrade it; omitting the flag leaves an existing service alone. |
 | Build offload (default) | Builds `fpl-bob`, writes the sccache client configuration, and records the optional sccache-dist scheduler and remote build hosts. |
 
+`home.myc` is the built-in Mycelium dashboard ([dashboard.md](dashboard.md)), not
+the retired soil-home launcher; the installer stops any old `dev.fungos.soil-home`
+service it finds.
+
 ## Prebuilt releases
 
 `--release` installs a published release archive instead of building the
