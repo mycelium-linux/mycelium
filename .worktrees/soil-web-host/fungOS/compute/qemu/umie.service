@@ -1,0 +1,20 @@
+[Unit]
+Description=fungOS optional UMIE CUDA inference experiment
+After=network-online.target fungos-nvidia-ready.service
+Wants=network-online.target
+Requires=fungos-nvidia-ready.service
+
+[Service]
+EnvironmentFile=/etc/fungos-compute/umie.env
+ExecStart=/var/lib/mycelium/software/umie/current/umie ${UMIE_MODEL_DIR} 127.0.0.1:8096
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

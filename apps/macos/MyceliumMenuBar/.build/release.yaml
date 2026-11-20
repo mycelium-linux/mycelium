@@ -1,0 +1,66 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "MyceliumMenuBar-arm64-apple-macosx15.0-release.exe": ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.exe>"]
+  "MyceliumMenuBar-arm64-apple-macosx15.0-release.module": ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.exe>","<MyceliumMenuBar-arm64-apple-macosx15.0-release.module>"]
+  "test": ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.exe>","<MyceliumMenuBar-arm64-apple-macosx15.0-release.module>"]
+default: "main"
+nodes:
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/CommandRunner.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumMenuBarApp.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumModel.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/SporesWindow.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/StatusPanel.swift"]
+    outputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/sources"]
+    description: "Write auxiliary file /Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/sources"
+
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/CommandRunner.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumMenuBarApp.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumModel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/SporesWindow.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/StatusPanel.swift.o"]
+    outputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.product/Objects.LinkFileList"
+
+  "/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<MyceliumMenuBar-arm64-apple-macosx15.0-release.exe>":
+    tool: phony
+    inputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar"]
+    outputs: ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.exe>"]
+
+  "<MyceliumMenuBar-arm64-apple-macosx15.0-release.module>":
+    tool: phony
+    inputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/CommandRunner.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumMenuBarApp.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumModel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/SporesWindow.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/StatusPanel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/Modules/MyceliumMenuBar.swiftmodule"]
+    outputs: ["<MyceliumMenuBar-arm64-apple-macosx15.0-release.module>"]
+
+  "C.MyceliumMenuBar-arm64-apple-macosx15.0-release.exe":
+    tool: shell
+    inputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/CommandRunner.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumMenuBarApp.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumModel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/SporesWindow.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/StatusPanel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.product/Objects.LinkFileList"]
+    outputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar"]
+    description: "Linking ./.build/arm64-apple-macosx/release/MyceliumMenuBar"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release","-o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar","-module-name","MyceliumMenuBar","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-dead_strip","-Xlinker","-alias","-Xlinker","_MyceliumMenuBar_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.product/Objects.LinkFileList","-target","arm64-apple-macosx14.0","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.MyceliumMenuBar-arm64-apple-macosx15.0-release.module":
+    tool: shell
+    inputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/CommandRunner.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumMenuBarApp.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/MyceliumModel.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/SporesWindow.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/StatusPanel.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/sources"]
+    outputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/CommandRunner.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumMenuBarApp.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/MyceliumModel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/SporesWindow.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/StatusPanel.swift.o","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/Modules/MyceliumMenuBar.swiftmodule"]
+    description: "Compiling Swift Module 'MyceliumMenuBar' (5 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","MyceliumMenuBar","-emit-dependencies","-emit-module","-emit-module-path","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/Modules/MyceliumMenuBar.swiftmodule","-output-file-map","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/output-file-map.json","-whole-module-optimization","-num-threads","10","-c","@/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/MyceliumMenuBar.build/sources","-I","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/Modules","-target","arm64-apple-macosx14.0","-O","-j10","-DSWIFT_PACKAGE","-module-cache-path","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/.build/arm64-apple-macosx/release/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","MyceliumMenuBar_main","-swift-version","5","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","myceliummenubar"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Sources/MyceliumMenuBar/","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Package.swift","/Users/ajmwagar/src/fungOS/mycelium/apps/macos/MyceliumMenuBar/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

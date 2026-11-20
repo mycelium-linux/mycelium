@@ -179,6 +179,7 @@ pub(super) fn project(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::net::Ipv4Addr;
     struct PolicyFile(std::path::PathBuf);
     impl PolicyFile {
         fn new(source: &str) -> Self {

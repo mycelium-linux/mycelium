@@ -1,0 +1,21 @@
+[package]
+name = "mycelium-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core device/capability abstractions for the mycelium network management layer"
+
+[dependencies]
+async-trait.workspace = true
+fpl-boot-contract = { path = "../fpl-boot-contract" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+indexmap.workspace = true
+mycelium-network-types = { workspace = true, features = ["serde"] }
+fpl-resource-observation.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+serde_json.workspace = true

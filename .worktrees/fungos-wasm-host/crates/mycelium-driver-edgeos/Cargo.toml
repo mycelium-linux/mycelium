@@ -1,0 +1,17 @@
+[package]
+name = "mycelium-driver-edgeos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "mycelium driver for Ubiquiti EdgeOS appliances (EdgeRouter / EdgeRunner)"
+
+[dependencies]
+mycelium-core.workspace = true
+mycelium-ssdp.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+russh = "0.63"
+zeroize = "1"

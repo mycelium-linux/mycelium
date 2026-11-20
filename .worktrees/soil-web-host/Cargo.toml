@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ajmwagar/mycelium"
+
+[workspace.dependencies]
+mycelium-core = { path = "crates/mycelium-core" }
+mycelium-network-types = { path = "crates/mycelium-network-types" }
+mycelium-tailscale = { path = "crates/mycelium-tailscale" }
+mycelium-dnssd = { path = "crates/mycelium-dnssd" }
+mycelium-ssdp = { path = "crates/mycelium-ssdp" }
+mycelium-driver-edgeos = { path = "crates/mycelium-driver-edgeos" }
+mycelium-driver-redfish = { path = "crates/mycelium-driver-redfish" }
+mycelium-driver-linux = { path = "crates/mycelium-driver-linux" }
+mycelium-driver-darwin = { path = "crates/mycelium-driver-darwin" }
+mycelium-driver-snmp = { path = "crates/mycelium-driver-snmp" }
+mycelium-driver-unifi = { path = "crates/mycelium-driver-unifi" }
+mycelium-plugins-lua = { path = "crates/mycelium-plugins-lua" }
+mycelium-peer-protocol = { path = "crates/mycelium-peer-protocol" }
+fpl-resource-observation = { path = "crates/fpl-resource-observation" }
+myceliumd = { path = "crates/myceliumd" }
+async-trait = "0.1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+indexmap = { version = "2", features = ["serde"] }
+jsonwebtoken = "9"
+memchr = "2"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "process"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[profile.release]
+lto = "thin"
