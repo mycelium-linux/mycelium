@@ -886,7 +886,7 @@ function renderFiles() {
 
 function renderPreview() {
   const listing = filesState.listing;
-  const file = listing?.file || filesState.selected;
+  const file = filesState.selected || listing?.file;
   if (!file) {
     $("files-preview").innerHTML = '<div class="ph">Preview</div><div class="empty">Select a file.</div>';
     return;
@@ -936,7 +936,6 @@ function selectFile(name) {
     return;
   }
   filesState.selected = entry;
-  filesState.listing = { file: entry };
   renderFiles();
 }
 
