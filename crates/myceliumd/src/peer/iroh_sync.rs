@@ -730,7 +730,8 @@ mod tests {
         .is_err());
         assert!(serde_json::from_str::<SyncConfig>(r#"{"ssh_access":true}"#).is_err());
         // An older config without the field defaults to direct-first.
-        let parsed: SyncConfig = serde_json::from_str(r#"{"public_relays":true,"seeds":[]}"#).unwrap();
+        let parsed: SyncConfig =
+            serde_json::from_str(r#"{"public_relays":true,"seeds":[]}"#).unwrap();
         assert!(parsed.direct_first);
     }
 
@@ -833,7 +834,11 @@ mod tests {
     async fn signed_gossip_completes_over_relay_only_iroh() {
         let server = relay_only_endpoint().await;
         let client = relay_only_endpoint().await;
-        println!("relay-only server endpoint_id={} client endpoint_id={}", server.id(), client.id());
+        println!(
+            "relay-only server endpoint_id={} client endpoint_id={}",
+            server.id(),
+            client.id()
+        );
         println!("relay-only server addr={:?}", server.addr());
         // Construction proof: neither side can offer a direct IP address, and
         // the server has at least one relay hint to dial.
@@ -914,7 +919,8 @@ mod tests {
             .expect("MYCELIUM_PROBE_RELAY_URL")
             .parse()
             .unwrap();
-        let tls_name = std::env::var("MYCELIUM_PROBE_SERVER_NAME").expect("MYCELIUM_PROBE_SERVER_NAME");
+        let tls_name =
+            std::env::var("MYCELIUM_PROBE_SERVER_NAME").expect("MYCELIUM_PROBE_SERVER_NAME");
         let home = std::env::var("MYCELIUM_PROBE_HOME").expect("MYCELIUM_PROBE_HOME");
         let home = std::path::Path::new(&home);
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -954,7 +960,10 @@ mod tests {
         let (send_stream, recv) = connection.open_bi().await.unwrap();
         let stream = tokio::time::timeout(
             HANDSHAKE,
-            connector.connect(server_name(&tls_name).unwrap(), tokio::io::join(recv, send_stream)),
+            connector.connect(
+                server_name(&tls_name).unwrap(),
+                tokio::io::join(recv, send_stream),
+            ),
         )
         .await
         .expect("mTLS timed out")

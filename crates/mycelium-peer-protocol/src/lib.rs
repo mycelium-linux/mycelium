@@ -1236,7 +1236,10 @@ mod tests {
     fn unknown_hardware_kind_is_preserved_verbatim() {
         let encoded = "\"quantum_annealer\"";
         let kind: super::HardwareKind = serde_json::from_str(encoded).unwrap();
-        assert_eq!(kind, super::HardwareKind::Unknown("quantum_annealer".into()));
+        assert_eq!(
+            kind,
+            super::HardwareKind::Unknown("quantum_annealer".into())
+        );
         // Critical for gossip: re-serializing must reproduce the original
         // string, otherwise a forwarded envelope's signature no longer verifies.
         assert_eq!(serde_json::to_string(&kind).unwrap(), encoded);
