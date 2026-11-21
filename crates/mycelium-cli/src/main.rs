@@ -820,10 +820,68 @@ async fn run(cmd: &str, args: &[String]) -> Result<Vec<String>, ClientError> {
             c.call(&Request::DeviceRemove { id: id.clone() }).await?;
             Ok(vec![format!("removed {id}")])
         }
-        other => Err(err_usage(&format!(
-            "unknown command `{other}` (see `mycelium`)"
-        ))),
+        other => external_subcommand(other, args),
     }
+}
+
+/// Run `mycelium-<command>` from PATH for commands this binary does not own.
+///
+/// This is the git/cargo extension point: a Spore, store, or vendor keeps its
+/// own release cadence and its own dependencies, while `mycelium store` stays
+/// spelled the same. Built-ins always win; only an unknown first argument is
+/// considered. The child inherits stdout/stderr/stdin, so `--json`, prompts and
+/// exit codes behave exactly as they do for a built-in.
+fn external_subcommand(command: &str, args: &[String]) -> Result<Vec<String>, ClientError> {
+    let name = external_command_name(command)
+        .ok_or_else(|| err_usage(&format!("unknown command `{command}` (see `mycelium`)")))?;
+    let Some(binary) = find_in_path(&name) else {
+        return Err(err_usage(&format!(
+            "unknown command `{command}` (see `mycelium`; no `{name}` in PATH)"
+        )));
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new(&binary).args(args).exec();
+        Err(ClientError::Io(error))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new(&binary)
+            .args(args)
+            .status()
+            .map_err(ClientError::Io)?;
+        if status.success() {
+            Ok(Vec::new())
+        } else {
+            Err(ClientError::Io(std::io::Error::other(format!(
+                "{name} exited {status}"
+            ))))
+        }
+    }
+}
+
+/// A subcommand is one path-free program segment. Slashes and `..` would turn a
+/// typo into an arbitrary executable, and a leading `-` would look like a flag.
+fn external_command_name(command: &str) -> Option<String> {
+    if command.is_empty()
+        || command.len() > 64
+        || command.starts_with('-')
+        || !command
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return None;
+    }
+    Some(format!("mycelium-{command}"))
+}
+
+fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 async fn topology_watch(args: &[String]) -> Result<Vec<String>, ClientError> {
@@ -6111,6 +6169,26 @@ fn render_tunnel_plan(plan: &serde_json::Value) -> Vec<String> {
         ),
         "run with --write to open the foreground tunnel; Ctrl-C closes it".into(),
     ]
+}
+
+#[cfg(test)]
+mod external_subcommand_tests {
+    use super::*;
+
+    #[test]
+    fn a_subcommand_is_one_safe_program_segment() {
+        assert_eq!(
+            external_command_name("store").as_deref(),
+            Some("mycelium-store")
+        );
+        assert_eq!(
+            external_command_name("spore-store").as_deref(),
+            Some("mycelium-spore-store")
+        );
+        for bad in ["", "-flag", "../store", "a/b", "Store", "store.exe"] {
+            assert!(external_command_name(bad).is_none(), "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -167,6 +167,19 @@ source <(mycelium completions bash)
 mycelium completions fish > ~/.config/fish/completions/mycelium.fish
 ```
 
+### External subcommands
+
+An unknown first argument is looked up in `PATH` as `mycelium-<command>`, the
+same extension point git and cargo use. Built-ins always win, and a matching
+child receives argv, environment, stdio and exit status unchanged:
+
+```sh
+mycelium store list      # runs mycelium-store list
+mycelium spore install   # runs mycelium-spore install
+```
+
+See [docs/subcommands.md](docs/subcommands.md) for the name and boundary rules.
+
 An administrator can instead run a temporary pairing listener when OIDC is not
 appropriate. The self-contained claim carries the rendezvous URL and a
 high-entropy secret; the authority stores only its hash. The listener exits
