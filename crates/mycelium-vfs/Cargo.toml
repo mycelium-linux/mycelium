@@ -1,0 +1,13 @@
+[package]
+name = "mycelium-vfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fleet-aware front door to the content-addressed VFS"
+
+[[bin]]
+name = "mycelium-vfs"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
