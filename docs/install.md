@@ -150,10 +150,11 @@ If you decline the VPN, the DNS resolver still needs root when its component
 runs. Decline the VPN prompt (`--no-vpn`) if you do not want a tunnel root
 service; that does not remove the DNS service's root requirement.
 
-The installer starts the tunnel process; it does **not** add kernel routes. The
-child learns peer prefixes and reports them, but route installation is still a
-documented `iroh-tun` gap (see [iroh-tun.md](iroh-tun.md)). The overlay is
-transport-ready, not yet a routed network without the operator adding routes.
+The tunnel assigns only this node's identity `/128` to the interface. The child
+installs learned peer prefixes into the host route table and removes them when
+they leave the catalog, so the overlay is a routed network without hand-edited
+routes (see [iroh-tun.md](iroh-tun.md)). On macOS the root wrapper assigns the
+address with `ifconfig`; on Linux it uses `ip -6 addr replace`.
 
 To remove the root service later:
 
@@ -214,8 +215,9 @@ not write files, start services, or ask for sudo.
 
 ## Component prerequisites
 
-- **VPN**: an IPv6 overlay prefix. The installer detects this node's existing
-  IPv6 `.myc` address when the daemon has one; otherwise pass `--overlay`.
+- **VPN**: this node's IPv6 identity address (`/128`). The installer derives it
+  with `mycelium iroh-tun address`; otherwise pass `--overlay`. Site subnets are
+  learned routes, not interface addresses.
 - **DNS**: `dnsmasq` at a known path (`/usr/sbin`, `/usr/bin`, or the Homebrew
   paths). `mycelium dns resolver init` refuses to create a policy without it.
   The installer retires legacy `mycelium-dns-resolver` user agents before it

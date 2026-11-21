@@ -113,15 +113,19 @@ fn render(value: &Value) -> Vec<String> {
             overlay
         }
     ));
+    let learned = value["routes"].as_array().map(Vec::len).unwrap_or(0);
+    let installed = value["kernel_routes"].as_array().map(Vec::len).unwrap_or(0);
     lines.push(format!(
-        "  routes    {} learned, {} refresh failure(s), status {}s old",
-        value["routes"].as_array().map(Vec::len).unwrap_or(0),
+        "  routes    {learned} learned, {installed} in the kernel, {} refresh failure(s), status {}s old",
         value["refresh_failures"].as_u64().unwrap_or(0),
         value["status_age_secs"]
             .as_u64()
             .map(|age| age.to_string())
             .unwrap_or_else(|| "never".into())
     ));
+    if let Some(error) = value["kernel_error"].as_str() {
+        lines.push(format!("  route error {error}"));
+    }
     if flag("external") {
         lines.push("  owner     external privileged service (root)".into());
     }
