@@ -109,13 +109,14 @@ stage=$WORK/root
 unpack=$WORK/unpack
 mkdir -p "$stage/usr/local/libexec/mycelium" "$stage/usr/local/bin" "$unpack"
 tar -C "$unpack" -xzf "$ARCHIVE"
-for binary in mycelium myceliumd mycelium-frontdoor mycelium-ingress mycelium-dns-resolver geoded iroh-tun; do
+for binary in mycelium myceliumd mycelium-frontdoor mycelium-ingress mycelium-dns-resolver geoded mycelium-vfs iroh-tun; do
     [ -f "$unpack/$binary" ] || die "$ARCHIVE has no $binary"
     install -m 755 "$unpack/$binary" "$stage/usr/local/libexec/mycelium/$binary"
 done
 # /usr/local/bin gets the CLI only; the rest are resolved from libexec so a
 # future package can move them without breaking PATH lookups.
 ln -sf /usr/local/libexec/mycelium/mycelium "$stage/usr/local/bin/mycelium"
+ln -sf /usr/local/libexec/mycelium/mycelium-vfs "$stage/usr/local/bin/mycelium-vfs"
 # One command for the privileged half. The package cannot run sudo for a person,
 # so this is the thing the postinstall points at and the README names.
 cat >"$stage/usr/local/bin/mycelium-setup" <<'SETUP'

@@ -74,6 +74,7 @@ COMPONENTS=(
     mycelium-ingress
     mycelium-dns-resolver
     geoded
+    mycelium-vfs
 )
 
 # `iroh-tun` is built from its own repository, so it is staged separately rather
@@ -347,12 +348,12 @@ build_target() {
         build=(cargo build --release --locked --target "$target" "${packages[@]}")
     else
         build=(cargo build --release --locked --target "$target"
-            -p mycelium-cli --features mycelium-cli/iroh-sync
+            -p mycelium-cli --features mycelium-cli/iroh-sync -p mycelium-vfs
             -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
     fi
     if [[ "$target" == *-unknown-linux-musl ]] && command -v cargo-zigbuild >/dev/null 2>&1; then
         build=(cargo zigbuild --release --locked --target "$target"
-            -p mycelium-cli --features mycelium-cli/iroh-sync
+            -p mycelium-cli --features mycelium-cli/iroh-sync -p mycelium-vfs
             -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
     fi
     local remote=0 remote_host=
@@ -380,7 +381,7 @@ build_target() {
             remote_cc=zig
         fi
         local remote_build=("${remote_cargo[@]}"
-            -p mycelium-cli --features mycelium-cli/iroh-sync
+            -p mycelium-cli --features mycelium-cli/iroh-sync -p mycelium-vfs
             -p mycelium-frontdoor -p mycelium-driver-dnsmasq -p geoded -p myceliumd)
         if [ "$target" = aarch64-unknown-linux-gnu ]; then
             remote_build=(env CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \

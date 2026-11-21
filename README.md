@@ -179,6 +179,9 @@ mycelium spore install   # runs mycelium-spore install
 ```
 
 See [docs/subcommands.md](docs/subcommands.md) for the name and boundary rules.
+`mycelium-vfs` is the first fleet-aware external command: roots, peer
+resolution, and `fungos-vfs` sync in one front door
+([docs/mycelium-vfs.md](docs/mycelium-vfs.md)).
 
 An administrator can instead run a temporary pairing listener when OIDC is not
 appropriate. The self-contained claim carries the rendezvous URL and a

@@ -490,7 +490,7 @@ install_mycelium() {
         [ -d "$src/crates/mycelium-cli" ] || die "not a Mycelium checkout: $src"
         say "Building Mycelium (first build can take a while)"
         if ! ( cd "$src" && run cargo build --release --locked \
-            -p mycelium-cli --features iroh-sync ); then
+            -p mycelium-cli --features iroh-sync -p mycelium-vfs ); then
             die "cargo build failed"
         fi
         if ! ( cd "$src" && run cargo build --release --locked \
@@ -500,14 +500,14 @@ install_mycelium() {
         BIN_SRC="$src/target/release"
     fi
     mkdir -p "$BIN_DIR" "$LOCAL_BIN"
-    for name in mycelium myceliumd mycelium-frontdoor mycelium-ingress mycelium-dns-resolver geoded; do
+    for name in mycelium myceliumd mycelium-frontdoor mycelium-ingress mycelium-dns-resolver geoded mycelium-vfs; do
         if [ -f "$BIN_SRC/$name" ]; then
             install_atomic "$BIN_SRC/$name" "$BIN_DIR/$name"
         else
             warn "prebuilt $name missing; that service will be unavailable"
         fi
     done
-    for name in mycelium myceliumd mycelium-frontdoor mycelium-ingress geoded; do
+    for name in mycelium myceliumd mycelium-frontdoor mycelium-ingress geoded mycelium-vfs; do
         if [ -f "$BIN_SRC/$name" ]; then install_atomic "$BIN_SRC/$name" "$LOCAL_BIN/$name"; fi
     done
     if [ -f "$BIN_SRC/mycelium-dns-resolver" ] && [ ! -L "$LOCAL_BIN/mycelium-dns-resolver" ]; then
