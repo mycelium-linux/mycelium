@@ -1,5 +1,9 @@
 # Shared authority
 
+The larger ownership, tag, Desktop and sharing model is in
+[authority-model.md](authority-model.md). This page is the runbook for the
+authority capabilities that exist today.
+
 Mycelium uses one offline-verifiable authority graph for access records and
 software promotion. The root key is configured on every peer by public key ID:
 
