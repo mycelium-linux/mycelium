@@ -41,11 +41,17 @@ would be worse than being down.
 {
   "tun": "utun220",
   "mtu": 1280,
-  "overlay": ["10.42.0.0/24"],
+  "overlay": ["fd7a:115c:a1f0:0:5aab:28ee:ebe3:a67f/128"],
   "refresh_secs": 15,
   "listen": "192.0.2.10:4400"
 }
 ```
+
+`overlay` is the identity address this node answers for, normally the `/128`
+derived by `mycelium iroh-tun address`. It is not a subnet to assign to the
+interface: a site subnet belongs in the learned route table, where the child
+installs it as a route to the tunnel rather than treating every address in it
+as local.
 
 Set `"external": true` when a root-owned LaunchDaemon or systemd unit runs
 the child. In that mode this daemon still owns the key and publishes the
@@ -128,18 +134,32 @@ from the outside. "No peers yet" is a warning, not a failure: the first node on
 an overlay has nobody to learn from and has to run before a second node can
 exist.
 
+## Kernel routes
+
+The child is also the route-table owner. On every catalog refresh it adds newly
+learned prefixes to the host and removes prefixes that left the catalog:
+
+- macOS: `route -n add -inet|-inet6 <prefix> -interface <tun>`
+- Linux: `ip -4|-6 route replace <prefix> dev <tun>`
+
+It only removes routes it added, so a hand-written route on the same interface
+survives a restart. A clean shutdown (SIGTERM or Ctrl-C) removes the table; a
+killed process leaves routes behind, and the next start removes the prefixes
+recorded in the previous status document before installing the fresh set. A
+prefix the kernel refuses is reported in `kernel_error` and is absent from
+`kernel_routes`; the tunnel then has a learned route it cannot actually carry.
+
+`mycelium iroh-tun status` shows both counts, and `doctor` fails when a learned
+prefix never reached the kernel. The installer assigns only the identity
+`/128` to the interface. Do not assign a whole subnet there: that makes the
+kernel treat every address in it as local and defeats peer routing.
+
+The child still refuses oversize packets with a checksummed ICMP
+fragmentation-needed notice and drops any packet whose source does not match a
+prefix owned by the sending peer; both have unit tests in `iroh-tun`.
+
 ## Not yet implemented
 
-- **Kernel route installation.** The child learns prefixes and reports them; it
-  does not add routes to the host. Until that lands, an operator adds the peer
-  prefixes to the tun by hand, and the status document describes the tunnel's
-  table rather than the kernel's. The installer starts the root-owned tunnel;
-  it does not make the overlay a routed network.
 - **Narrow privilege split.** The root service holds the tun fd and runs the
   whole child as root. A small helper that owns only the device and passes its
   fd remains the intended shape.
-
-The child already refuses oversize packets with a checksummed ICMP
-fragmentation-needed notice (rather than dropping them silently) and drops any
-packet whose source does not match a prefix owned by the sending peer; both have
-unit tests in `iroh-tun`.

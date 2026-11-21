@@ -901,6 +901,10 @@ install_vpn() {
         *) die "overlay must be an IPv6 CIDR, got $overlay" ;;
     esac
     case "$overlay" in */*) ;; *) overlay="$overlay/128" ;; esac
+    case "$overlay" in
+        */128) ;;
+        *) die "overlay must be this node's identity address (/128), got $overlay; site subnets belong in the learned route table, not on the interface" ;;
+    esac
 
     tun=$TUN
     [ -n "$tun" ] || tun=$(detect_tun "$(uname -s)")
@@ -958,7 +962,21 @@ child=\$!
 # The tunnel owns the device; the address is this node's identity, so give it
 # to the interface as soon as it exists, then stay in the foreground so the
 # service manager still sees one process tree.
-if [ '$(uname -s)' = Linux ]; then
+case "$(uname -s)" in
+Darwin)
+  assigned=0
+  i=0
+  while [ \$i -lt 150 ]; do
+    if /sbin/ifconfig '$tun' >/dev/null 2>&1 \\
+      && { /sbin/ifconfig '$tun' inet6 '$overlay' >/dev/null 2>&1 \\
+        || /sbin/ifconfig '$tun' inet6 '$overlay' alias >/dev/null 2>&1; }; then
+      assigned=1
+      break
+    fi
+    i=\$((i+1)); sleep 0.1
+  done
+  ;;
+Linux)
   ipbin=/usr/sbin/ip
   [ -x "\$ipbin" ] || ipbin=/sbin/ip
   assigned=0
@@ -971,13 +989,17 @@ if [ '$(uname -s)' = Linux ]; then
     fi
     i=\$((i+1)); sleep 0.1
   done
-  if [ \$assigned -ne 1 ]; then
-    # Running without the identity address would publish nothing and the zone
-    # would quietly lose this node, so fail and let the service manager retry.
-    echo "iroh-tun: could not assign $overlay to $tun" >&2
-    kill \$child 2>/dev/null || true
-    exit 1
-  fi
+  ;;
+*)
+  assigned=0
+  ;;
+esac
+if [ \$assigned -ne 1 ]; then
+  # Running without the identity address would publish nothing and the zone
+  # would quietly lose this node, so fail and let the service manager retry.
+  echo "iroh-tun: could not assign $overlay to $tun" >&2
+  kill \$child 2>/dev/null || true
+  exit 1
 fi
 wait \$child
 EOF

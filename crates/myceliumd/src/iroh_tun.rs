@@ -211,6 +211,13 @@ pub struct Status {
     pub routes: Vec<StatusRoute>,
     #[serde(default)]
     pub refresh_failures: u32,
+    /// Prefixes the child put in the host route table. A prefix can be learned
+    /// and absent here when the kernel refused it; that is the difference
+    /// between routing and merely knowing.
+    #[serde(default)]
+    pub kernel_routes: Vec<String>,
+    #[serde(default)]
+    pub kernel_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -234,6 +241,8 @@ struct State {
     started_at: Option<u64>,
     endpoint_id: Option<String>,
     routes: Vec<StatusRoute>,
+    kernel_routes: Vec<String>,
+    kernel_error: Option<String>,
     status_age: Option<u64>,
     refresh_failures: u32,
     restarts: u32,
@@ -416,6 +425,8 @@ impl Supervisor {
             Ok(Some(status)) if status.endpoint_id == endpoint_id => {
                 state.status_age = Some(now.saturating_sub(status.observed_at));
                 state.routes = status.routes.clone();
+                state.kernel_routes = status.kernel_routes.clone();
+                state.kernel_error = status.kernel_error.clone();
                 state.refresh_failures = status.refresh_failures;
                 if !config.external
                     && now.saturating_sub(status.observed_at) > wedged_after
@@ -438,14 +449,20 @@ impl Supervisor {
                 // that no longer exists.
                 state.status_age = None;
                 state.routes.clear();
+                state.kernel_routes.clear();
+                state.kernel_error = None;
             }
             Ok(None) => {
                 state.status_age = None;
                 state.routes.clear();
+                state.kernel_routes.clear();
+                state.kernel_error = None;
             }
             Err(error) => {
                 state.status_age = None;
                 state.routes.clear();
+                state.kernel_routes.clear();
+                state.kernel_error = None;
                 note(&mut state, error);
             }
         }
@@ -526,6 +543,8 @@ impl Supervisor {
             "overlay": config.as_ref().map(|c| c.overlay.clone()).unwrap_or_default(),
             "listen": config.as_ref().and_then(|c| c.listen.clone()),
             "routes": state.routes,
+            "kernel_routes": state.kernel_routes,
+            "kernel_error": state.kernel_error,
             "refresh_failures": state.refresh_failures,
             "status_age_secs": state.status_age,
             "publishing": running && fresh,

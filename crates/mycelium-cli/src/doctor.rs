@@ -411,6 +411,7 @@ fn iroh_tun_checks(checks: &mut Vec<Value>, status: &Value, catalog: Option<&Val
     let running = status["running"].as_bool().unwrap_or(false);
     let publishing = status["publishing"].as_bool().unwrap_or(false);
     let routes = status["routes"].as_array().map_or(0, Vec::len);
+    let kernel_routes = status["kernel_routes"].as_array().map_or(0, Vec::len);
     let prefixes = status["overlay"].as_array().map_or(0, Vec::len);
     let tun = status["tun"].as_str().unwrap_or("tun");
     add(
@@ -429,7 +430,7 @@ fn iroh_tun_checks(checks: &mut Vec<Value>, status: &Value, catalog: Option<&Val
         (
             if routes > 0 { "ok" } else { "warn" },
             format!(
-                "{tun} up, {routes} peer prefix(es) learned, status {}s old",
+                "{tun} up, {routes} peer prefix(es) learned, {kernel_routes} in the kernel, status {}s old",
                 status["status_age_secs"]
             ),
         )
@@ -453,6 +454,29 @@ fn iroh_tun_checks(checks: &mut Vec<Value>, status: &Value, catalog: Option<&Val
         )
     };
     add(checks, "iroh-tun tunnel", status_word, detail);
+    if let Some(error) = status["kernel_error"].as_str() {
+        add(
+            checks,
+            "iroh-tun routes",
+            "fail",
+            format!("learned prefixes are not in the kernel route table: {error}"),
+        );
+    } else if routes > 0 && kernel_routes == 0 {
+        add(
+            checks,
+            "iroh-tun routes",
+            "warn",
+            "peer prefixes are learned but none are installed; the tunnel cannot carry them yet"
+                .into(),
+        );
+    } else if kernel_routes > 0 {
+        add(
+            checks,
+            "iroh-tun routes",
+            "ok",
+            format!("{kernel_routes} peer prefix(es) installed"),
+        );
+    }
     if routes == 0 && running && publishing {
         // Not a failure: the first node in a fleet has no peers to learn from
         // and has to run before a second node can exist.
