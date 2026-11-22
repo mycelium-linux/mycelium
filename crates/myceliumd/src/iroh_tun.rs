@@ -226,6 +226,21 @@ pub struct StatusRoute {
     pub peer: String,
 }
 
+/// Split the child's learned routes into peers and self.
+///
+/// A child that learns the overlay prefix it answers for from the catalog is
+/// not evidence of a peer: it installs a route to its own endpoint, which looks
+/// exactly like a healthy peer route to every count in the UI. Counting it
+/// separately is the difference between "this overlay has one member" and
+/// "this overlay works", and the two must not share a number.
+fn route_counts(routes: &[StatusRoute], endpoint_id: Option<&str>) -> (usize, usize) {
+    let Some(own) = endpoint_id else {
+        return (routes.len(), 0);
+    };
+    let self_routes = routes.iter().filter(|route| route.peer == own).count();
+    (routes.len() - self_routes, self_routes)
+}
+
 /// One supervisor per daemon. Disabled is a normal state, not an error.
 pub struct Supervisor {
     paths: Paths,
@@ -530,6 +545,7 @@ impl Supervisor {
                 .as_ref()
                 .map_or(0, |c| (c.refresh_secs * 3).max(LEASE_SECONDS))
         });
+        let (peer_routes, self_routes) = route_counts(&state.routes, state.endpoint_id.as_deref());
         serde_json::json!({
             "enabled": enabled,
             "config": self.paths.config.display().to_string(),
@@ -543,6 +559,8 @@ impl Supervisor {
             "overlay": config.as_ref().map(|c| c.overlay.clone()).unwrap_or_default(),
             "listen": config.as_ref().and_then(|c| c.listen.clone()),
             "routes": state.routes,
+            "peer_routes": peer_routes,
+            "self_routes": self_routes,
             "kernel_routes": state.kernel_routes,
             "kernel_error": state.kernel_error,
             "refresh_failures": state.refresh_failures,
@@ -832,6 +850,33 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn route(prefix: &str, peer: &str) -> StatusRoute {
+        StatusRoute {
+            prefix: prefix.into(),
+            peer: peer.into(),
+        }
+    }
+
+    #[test]
+    fn a_route_to_this_nodes_endpoint_is_not_a_peer() {
+        // The child learned the prefix it answers for from the catalog. Before
+        // this split the daemon counted it as a peer route, so a one-member
+        // overlay reported healthy.
+        let routes = vec![
+            route("fd7a:115c:a1f0:0:5aab:28ee:ebe3:a67f/128", "own"),
+            route("fd7a:115c:a1f0:0:22a9:e2b0:4d9f:5e36/128", "peer"),
+        ];
+        assert_eq!(route_counts(&routes, Some("own")), (1, 1));
+        assert_eq!(route_counts(&routes, Some("peer")), (1, 1));
+    }
+
+    #[test]
+    fn no_endpoint_yet_means_no_route_can_be_classified_as_self() {
+        let routes = vec![route("10.9.0.0/24", "peer")];
+        assert_eq!(route_counts(&routes, None), (1, 0));
+        assert_eq!(route_counts(&[], Some("own")), (0, 0));
+    }
 
     fn config(value: serde_json::Value) -> Result<Config, String> {
         serde_json::from_value::<Config>(value)

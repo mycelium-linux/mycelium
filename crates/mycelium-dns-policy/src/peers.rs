@@ -9,11 +9,16 @@
 //! Two record families come out of one peer observation:
 //! - site records, `node.site.suffix`, for every publishable address: a path into
 //!   a site, which is what the site zone is for;
-//! - flat records, `node.suffix`, IPv6 only: the address a node is reachable at
-//!   from anywhere. IPv4 is a path (LAN, WireGuard mesh), not an identity, so a
-//!   flat IPv4 answer would name a route that only exists inside one site.
+//! - flat records, `node.suffix`, overlay addresses only: the address a node is
+//!   reachable at from anywhere. IPv4 is a path (LAN, WireGuard mesh), not an
+//!   identity, so a flat IPv4 answer would name a route that only exists inside
+//!   one site. For the same reason a flat name carries only Mycelium's own
+//!   overlay prefix: every other IPv6 a node has (LAN ULA, another mesh's ULA)
+//!   is a path that exists on some hosts and not others. Publishing those made
+//!   `<node>.myc` answer with a different address set depending on which node
+//!   built the zone.
 
-use crate::addresses::publishable_address;
+use crate::addresses::{is_overlay, publishable_address};
 use crate::{canonical_domain, Delegation, DnsRecord};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,7 +141,10 @@ pub fn host_records(peers: &Value, scope: &PeerScope<'_>, now: u64) -> Result<Ho
                     node: node.into(),
                 });
             }
-            if address.is_ipv6() && !delegated(&flat_name) {
+            // Identity only: an overlay address is derived from the node id, so
+            // every host that builds this zone agrees on it. Anything else is a
+            // path into one site and belongs in the site record.
+            if is_overlay(address) && !delegated(&flat_name) {
                 if flat_owners
                     .insert(flat_name.clone(), node.to_owned())
                     .is_some_and(|owner| owner != node)
@@ -163,9 +171,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Includes another mesh's ULA on purpose: it must never reach a flat name.
     fn scopes() -> Vec<String> {
         vec!["192.168.10.0/24".into(), "fd7a:115c:a1e0::/64".into()]
     }
+
+    /// A node's identity address, derived from its id in the overlay prefix.
+    const OVERLAY_A: &str = "fd7a:115c:a1f0::6";
+    const OVERLAY_B: &str = "fd7a:115c:a1f0::7";
 
     struct Fixture {
         prefixes: Vec<String>,
@@ -229,21 +242,47 @@ mod tests {
                     "n1",
                     "lab",
                     1000,
-                    &["192.168.10.30", "fd7a:115c:a1e0::6"],
+                    &["192.168.10.30", "fd7a:115c:a1e0::6", OVERLAY_A],
+                )]),
+                1000,
+            )
+            .unwrap();
+        assert_eq!(records.site.len(), 3, "every publishable address is a path");
+        assert_eq!(
+            records.flat,
+            vec![DnsRecord {
+                name: "neo.myc".into(),
+                address: OVERLAY_A.parse().unwrap(),
+                site: "lab".into(),
+                node: "n1".into(),
+            }],
+            "a flat name is identity only: the overlay address, not a path"
+        );
+    }
+
+    #[test]
+    fn another_meshs_or_lan_prefix_never_becomes_a_flat_name() {
+        // Both scopes are declared reachable, so both are valid site paths. A
+        // flat name is what a client outside the site uses, so it must not
+        // carry either: the answer would differ per node and per network.
+        let mut fixture = Fixture::default();
+        fixture.prefixes.push("2001:db8::/64".into());
+        let records = fixture
+            .project(
+                json!([peer(
+                    "neo",
+                    "n1",
+                    "lab",
+                    1000,
+                    &["fd7a:115c:a1e0::6", "2001:db8::9"]
                 )]),
                 1000,
             )
             .unwrap();
         assert_eq!(records.site.len(), 2);
-        assert_eq!(
-            records.flat,
-            vec![DnsRecord {
-                name: "neo.myc".into(),
-                address: "fd7a:115c:a1e0::6".parse().unwrap(),
-                site: "lab".into(),
-                node: "n1".into(),
-            }],
-            "a flat name is IPv6 only: IPv4 is a path into a site"
+        assert!(
+            records.flat.is_empty(),
+            "no overlay identity address means no flat name"
         );
     }
 
@@ -312,8 +351,8 @@ mod tests {
         assert!(fixture
             .project(
                 json!([
-                    peer("neo", "n1", "lab", 1000, &["fd7a:115c:a1e0::6"]),
-                    peer("neo", "n2", "lab", 1000, &["fd7a:115c:a1e0::7"])
+                    peer("neo", "n1", "lab", 1000, &[OVERLAY_A]),
+                    peer("neo", "n2", "lab", 1000, &[OVERLAY_B])
                 ]),
                 1000,
             )
@@ -326,8 +365,8 @@ mod tests {
         let records = fixture
             .project(
                 json!([
-                    peer("neo", "n1", "lab", 1000, &["fd7a:115c:a1e0::6"]),
-                    peer("neo", "n1", "deck", 1000, &["fd7a:115c:a1e0::6"])
+                    peer("neo", "n1", "lab", 1000, &[OVERLAY_A]),
+                    peer("neo", "n1", "deck", 1000, &[OVERLAY_A])
                 ]),
                 1000,
             )
@@ -357,7 +396,7 @@ mod tests {
                     "n1",
                     "lab",
                     1000,
-                    &["192.168.10.30", "fd7a:115c:a1e0::6"]
+                    &["192.168.10.30", OVERLAY_A]
                 )]),
                 1000,
             )

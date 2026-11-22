@@ -410,7 +410,13 @@ fn iroh_tun_checks(checks: &mut Vec<Value>, status: &Value, catalog: Option<&Val
         });
     let running = status["running"].as_bool().unwrap_or(false);
     let publishing = status["publishing"].as_bool().unwrap_or(false);
-    let routes = status["routes"].as_array().map_or(0, Vec::len);
+    // A route to this node's own endpoint is not a peer. Counting it as one made
+    // a one-member overlay report "1 peer prefix learned".
+    let self_routes = status["self_routes"].as_u64().unwrap_or(0) as usize;
+    let routes = status["peer_routes"].as_u64().map_or_else(
+        || status["routes"].as_array().map_or(0, Vec::len),
+        |count| count as usize,
+    );
     let kernel_routes = status["kernel_routes"].as_array().map_or(0, Vec::len);
     let prefixes = status["overlay"].as_array().map_or(0, Vec::len);
     let tun = status["tun"].as_str().unwrap_or("tun");
@@ -475,6 +481,16 @@ fn iroh_tun_checks(checks: &mut Vec<Value>, status: &Value, catalog: Option<&Val
             "iroh-tun routes",
             "ok",
             format!("{kernel_routes} peer prefix(es) installed"),
+        );
+    }
+    if self_routes > 0 {
+        add(
+            checks,
+            "iroh-tun self route",
+            "warn",
+            format!(
+                "{self_routes} learned route(s) point at this node's own endpoint; they are not peers and do not extend the overlay"
+            ),
         );
     }
     if routes == 0 && running && publishing {

@@ -5,6 +5,11 @@ plugins. The goal is not to maximize Lua. Rust owns transports, credentials,
 safety, typed topology, persistence, and protocol correctness; Lua owns small
 vendor dialects that turn structured inputs into deterministic plans or facts.
 
+`docs/logic-placement.md` puts measured sizes on the same question and separates
+vendor dialects from the larger CLI/daemon surface, where most of the movable
+logic actually lives. This file decides *per area*; that file decides *per kind
+of logic*.
+
 ## Decision rule
 
 Move code to Lua when all of these are true:
