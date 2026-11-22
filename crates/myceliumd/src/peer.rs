@@ -39,6 +39,8 @@ const BACKOFF_RESET_SESSION: Duration = Duration::from_secs(30);
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_OBSERVATIONS_PER_MESSAGE: usize = 64;
 const MAX_OBSERVATION_MESSAGE_BYTES: usize = 900 * 1024;
+/// Room for the signature, origin, sequence and JSON keys that wrap a payload.
+const ENVELOPE_BUDGET_BYTES: usize = 4 * 1024;
 
 type AnyError = Box<dyn Error + Send + Sync>;
 
@@ -687,12 +689,24 @@ impl Mesh {
         if self.last_topology_digest.lock().await.as_deref() == Some(digest.as_str()) {
             return Ok(());
         }
-        self.publish(PeerEvent::Topology(TopologySnapshot {
+        let snapshot = TopologySnapshot {
             schema_version: 1,
             digest: digest.clone(),
             topology: value,
-        }))
-        .await?;
+        };
+        // An envelope larger than the ingest cap is dropped by every receiver,
+        // including this daemon, which leaves topology silently unsynced. Fail
+        // here instead: the sender can see the cause, and the caller can trim
+        // whatever grew (see `Topology::MAX_UPDATED_FROM`).
+        let bytes = serde_json::to_vec(&snapshot)?.len();
+        if bytes + ENVELOPE_BUDGET_BYTES > MAX_OBSERVATION_MESSAGE_BYTES {
+            return Err(format!(
+                "topology snapshot is {bytes} bytes, more than the {} byte observation limit; peers would drop it",
+                MAX_OBSERVATION_MESSAGE_BYTES - ENVELOPE_BUDGET_BYTES
+            )
+            .into());
+        }
+        self.publish(PeerEvent::Topology(snapshot)).await?;
         *self.last_topology_digest.lock().await = Some(digest);
         Ok(())
     }
