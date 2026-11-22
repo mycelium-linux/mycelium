@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::io::BufReader as StdBufReader;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7,6 +7,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
@@ -38,6 +40,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_RESET_SESSION: Duration = Duration::from_secs(30);
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_OBSERVATIONS_PER_MESSAGE: usize = 64;
+/// Frames may queue only this long before a peer that is not draining its
+/// socket ends the session. A 900 KiB observation batch is the largest frame
+/// a peer sends on its own, so this is a few batches of slack.
+const OUTBOX_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OBSERVATION_MESSAGE_BYTES: usize = 900 * 1024;
 /// Room for the signature, origin, sequence and JSON keys that wrap a payload.
 const ENVELOPE_BUDGET_BYTES: usize = 4 * 1024;
@@ -1458,7 +1464,8 @@ impl Mesh {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let (reader, mut writer) = tokio::io::split(stream);
-        send(&mut writer, &PeerMessage::Hello(self.local_hello().await)).await?;
+        let mut outbox = Outbox::default();
+        outbox.push(&PeerMessage::Hello(self.local_hello().await))?;
         let mut reader = BufReader::new(reader);
         let mut pending_line = Vec::new();
         let mut digest_interval = tokio::time::interval(DIGEST_INTERVAL);
@@ -1480,6 +1487,7 @@ impl Mesh {
         let mut read_deadline = tokio::time::Instant::now() + PEER_IDLE_TIMEOUT;
         loop {
             tokio::select! {
+                result = outbox.drain(&mut writer), if !outbox.is_empty() => result?,
                 _ = tokio::time::sleep_until(read_deadline) => {
                     return Err("peer sync read timed out".into());
                 }
@@ -1546,11 +1554,7 @@ impl Mesh {
                                 })
                                 .await??;
                                 for chunk in batches {
-                                    send(
-                                        &mut writer,
-                                        &PeerMessage::Observations(chunk),
-                                    )
-                                    .await?;
+                                    outbox.push(&PeerMessage::Observations(chunk))?;
                                 }
                             }
                         }
@@ -1562,7 +1566,7 @@ impl Mesh {
                                 continue;
                             }
                             if let Some(chunk) = artifact_chunk(&digest, offset, length)? {
-                                send(&mut writer, &chunk).await?;
+                                outbox.push(&chunk)?;
                             }
                         }
                         PeerMessage::ArtifactChunk { digest, offset, data, complete } => {
@@ -1579,7 +1583,7 @@ impl Mesh {
                             )?;
                             if !complete {
                                 if let Some(request) = self.next_artifact_request().await? {
-                                    send(&mut writer, &request).await?;
+                                    outbox.push(&request)?;
                                 }
                             }
                         }
@@ -1588,7 +1592,7 @@ impl Mesh {
                                 continue;
                             }
                             if let Some(response) = crate::ssh_renewal::issue(&request, now(), &self.access_view(now()).await) {
-                                send(&mut writer, &PeerMessage::SshRenewalResponse(response)).await?;
+                                outbox.push(&PeerMessage::SshRenewalResponse(response))?;
                             }
                         }
                         // New clients use retained gossip deliveries; keep the
@@ -1620,12 +1624,12 @@ impl Mesh {
                         .iter()
                         .map(|(key, envelope)| (key.clone(), envelope.sequence))
                         .collect();
-                    send(&mut writer, &PeerMessage::Digest(digest)).await?;
+                    outbox.push(&PeerMessage::Digest(digest))?;
                 }
                 _ = artifact_interval.tick() => {
                     if !binding_required || transport_authenticated {
                         if let Some(request) = self.next_artifact_request().await? {
-                            send(&mut writer, &request).await?;
+                            outbox.push(&request)?;
                         }
                     }
                 }
@@ -3583,5 +3587,83 @@ mod tests {
             "sshd 1 root 3u IPv4 x TCP 10.0.0.2:22->10.0.0.3:50000 (ESTABLISHED)",
             22
         ));
+    }
+}
+
+// Outbox: frames queued here are drained inside the session's select! loop
+// instead of writing directly to the socket. This prevents the deadlock where
+// both peers have large batches and each blocks on write_timeout because
+// neither is reading. Small hellos are unaffected, which is why peers appear
+// in `mycelium peers` and sync still looks alive.
+#[derive(Default)]
+struct Outbox {
+    frames: VecDeque<Vec<u8>>,
+    offset: usize,
+    queued: usize,
+    needs_flush: bool,
+}
+
+impl Outbox {
+    fn is_empty(&self) -> bool {
+        self.frames.is_empty() && !self.needs_flush
+    }
+
+    fn push(&mut self, message: &PeerMessage) -> Result<(), AnyError> {
+        let mut frame = serde_json::to_vec(message)?;
+        frame.push(b'\n');
+        self.queued += frame.len();
+        if self.queued > OUTBOX_LIMIT_BYTES {
+            return Err(format!("peer is not draining writes: {} bytes queued", self.queued).into());
+        }
+        self.frames.push_back(frame);
+        self.needs_flush = true;
+        Ok(())
+    }
+
+    /// Cancellation-safe: only bytes the socket acknowledged are dropped,
+    /// so a `select!` tick that interrupts a frame resumes at the same offset
+    /// and never rewrites or reorders it.
+    async fn drain<W: tokio::io::AsyncWrite + Unpin>(&mut self, writer: &mut W) -> Result<(), AnyError> {
+        std::future::poll_fn(|cx| loop {
+            let Some(frame_len) = self.frames.front().map(Vec::len) else {
+                if !self.needs_flush {
+                    return Poll::Ready(Ok(()));
+                }
+                return match Pin::new(&mut *writer).poll_flush(cx) {
+                    Poll::Ready(Ok(())) => {
+                        self.needs_flush = false;
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                    Poll::Pending => Poll::Pending,
+                };
+            };
+            if self.offset >= frame_len {
+                self.frames.pop_front();
+                self.offset = 0;
+                continue;
+            }
+            let written = {
+                let frame = self.frames.front().expect("checked above");
+                Pin::new(&mut *writer).poll_write(cx, &frame[self.offset..])
+            };
+            match written {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::WriteZero)))
+                }
+                Poll::Ready(Ok(count)) => {
+                    self.offset += count;
+                    self.queued = self.queued.saturating_sub(count);
+                    if self.offset >= frame_len {
+                        self.frames.pop_front();
+                        self.offset = 0;
+                    }
+                    continue;
+                }
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }).await
+        .map_err(|error| -> AnyError { format!("peer sync write failed: {error}").into() })
     }
 }
