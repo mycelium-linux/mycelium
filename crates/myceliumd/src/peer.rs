@@ -4,10 +4,10 @@ use std::io::BufReader as StdBufReader;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::pin::Pin;
 use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -3613,7 +3613,9 @@ impl Outbox {
         frame.push(b'\n');
         self.queued += frame.len();
         if self.queued > OUTBOX_LIMIT_BYTES {
-            return Err(format!("peer is not draining writes: {} bytes queued", self.queued).into());
+            return Err(
+                format!("peer is not draining writes: {} bytes queued", self.queued).into(),
+            );
         }
         self.frames.push_back(frame);
         self.needs_flush = true;
@@ -3623,7 +3625,10 @@ impl Outbox {
     /// Cancellation-safe: only bytes the socket acknowledged are dropped,
     /// so a `select!` tick that interrupts a frame resumes at the same offset
     /// and never rewrites or reorders it.
-    async fn drain<W: tokio::io::AsyncWrite + Unpin>(&mut self, writer: &mut W) -> Result<(), AnyError> {
+    async fn drain<W: tokio::io::AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+    ) -> Result<(), AnyError> {
         std::future::poll_fn(|cx| loop {
             let Some(frame_len) = self.frames.front().map(Vec::len) else {
                 if !self.needs_flush {
@@ -3663,7 +3668,8 @@ impl Outbox {
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Pending => return Poll::Pending,
             }
-        }).await
+        })
+        .await
         .map_err(|error| -> AnyError { format!("peer sync write failed: {error}").into() })
     }
 }
@@ -3775,7 +3781,10 @@ mod outbox_tests {
         }
 
         let mut writer = Trickle::default();
-        outbox.drain(&mut writer).await.expect("a trickling socket still drains");
+        outbox
+            .drain(&mut writer)
+            .await
+            .expect("a trickling socket still drains");
 
         assert_eq!(decode(&writer.bytes), sent);
         assert!(outbox.is_empty(), "nothing should be left queued");
@@ -3789,7 +3798,10 @@ mod outbox_tests {
             outbox.push(message).expect("under the limit");
         }
 
-        let mut writer = Stalling { stalls: 3, ..Default::default() };
+        let mut writer = Stalling {
+            stalls: 3,
+            ..Default::default()
+        };
         // Poll by hand: each `Pending` is a `select!` tick that abandoned the
         // frame mid-flight. Re-polling must resume, not rewrite or reorder.
         let mut drain = Box::pin(outbox.drain(&mut writer));
@@ -3805,9 +3817,13 @@ mod outbox_tests {
         }
         drop(drain);
 
-        assert_eq!(writer.bytes.len(), sent.iter().map(|m| {
-            serde_json::to_vec(m).unwrap().len() + 1
-        }).sum::<usize>(), "no byte was written twice");
+        assert_eq!(
+            writer.bytes.len(),
+            sent.iter()
+                .map(|m| { serde_json::to_vec(m).unwrap().len() + 1 })
+                .sum::<usize>(),
+            "no byte was written twice"
+        );
         assert_eq!(decode(&writer.bytes), sent);
         assert!(outbox.is_empty());
     }
@@ -3836,6 +3852,9 @@ mod outbox_tests {
             .filter(|token| !token.is_empty())
             .find_map(|token| token.parse().ok())
             .unwrap_or_else(|| panic!("no byte count in {error}"));
-        assert!(queued > OUTBOX_LIMIT_BYTES, "{queued} should exceed {OUTBOX_LIMIT_BYTES}");
+        assert!(
+            queued > OUTBOX_LIMIT_BYTES,
+            "{queued} should exceed {OUTBOX_LIMIT_BYTES}"
+        );
     }
 }

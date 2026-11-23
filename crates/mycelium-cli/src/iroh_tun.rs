@@ -113,12 +113,10 @@ fn render(value: &Value) -> Vec<String> {
             overlay
         }
     ));
-    let learned = value["peer_routes"]
-        .as_u64()
-        .map_or_else(
-            || value["routes"].as_array().map(Vec::len).unwrap_or(0),
-            |count| count as usize,
-        );
+    let learned = value["peer_routes"].as_u64().map_or_else(
+        || value["routes"].as_array().map(Vec::len).unwrap_or(0),
+        |count| count as usize,
+    );
     let self_routes = value["self_routes"].as_u64().unwrap_or(0);
     let installed = value["kernel_routes"].as_array().map(Vec::len).unwrap_or(0);
     lines.push(format!(
@@ -327,7 +325,10 @@ mod tests {
         });
         let lines = render(&value).join("\n");
         assert!(lines.contains("0 peer prefix(es) learned"), "{lines}");
-        assert!(lines.contains("point at this node's own endpoint"), "{lines}");
+        assert!(
+            lines.contains("point at this node's own endpoint"),
+            "{lines}"
+        );
     }
 
     #[test]
