@@ -294,7 +294,7 @@ fn frontdoor_checks(checks: &mut Vec<Value>, snapshot: &Value, home: &Path) {
             "{} ({})",
             snapshot["certificate"].as_str().unwrap_or("missing"),
             if cert_trusted {
-                "verified for ai.myc"
+                "verified for route and catalog names"
             } else {
                 "browser will warn; run `mycelium frontdoor install --write --trust-cert`"
             }
@@ -365,7 +365,7 @@ fn frontdoor_checks(checks: &mut Vec<Value>, snapshot: &Value, home: &Path) {
         "tls verification",
         if tls_verified { "ok" } else { "fail" },
         if tls_verified {
-            "certificate chain and ai.myc identity verified against the local trust anchor".into()
+            "certificate chain and route names verified against the local trust anchor".into()
         } else if let Some(error) = snapshot["tls_error"].as_str() {
             format!("TLS probe failed: {error}")
         } else {

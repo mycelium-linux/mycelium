@@ -4,7 +4,7 @@ use crate::route::RouteTable;
 use crate::usage::{self, Metering, StreamUsage, UsageStore};
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{Request, Response, StatusCode, Uri};
+use axum::http::{header, Request, Response, StatusCode, Uri};
 use axum::routing::get;
 use axum::Router;
 use futures_util::{Stream, StreamExt};
@@ -509,11 +509,21 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
         return crate::dashboard::handle(&state, request).await;
     }
     let Some(route) = state.table.read().unwrap().select(&host) else {
-        return text(StatusCode::NOT_FOUND, "no route");
+        return error_page(
+            StatusCode::NOT_FOUND,
+            &host,
+            "No app is registered at this name.",
+            state.forwarded_proto,
+        );
     };
     let targets = targets_for(&route, &state.services.read().unwrap());
     if targets.is_empty() {
-        return text(StatusCode::SERVICE_UNAVAILABLE, "no backend for route");
+        return error_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &host,
+            "The app exists, but no backend is answering for it.",
+            state.forwarded_proto,
+        );
     }
 
     let method = request.method().clone();
@@ -525,7 +535,14 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
         .map(str::to_owned);
     let body = match axum::body::to_bytes(request.into_body(), MAX_BODY_BYTES).await {
         Ok(body) => body,
-        Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"),
+        Err(_) => {
+            return error_page(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &host,
+                "That request was larger than this frontdoor accepts.",
+                state.forwarded_proto,
+            );
+        }
     };
     let metering = usage::classify(uri.path(), &body);
 
@@ -597,15 +614,30 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
                     "mycelium-frontdoor: {} candidate {} failed: {error}",
                     route.name, target.base
                 );
-                return text(StatusCode::BAD_GATEWAY, "upstream unavailable");
+                return error_page(
+                    StatusCode::BAD_GATEWAY,
+                    &host,
+                    "The app stopped answering before the response completed.",
+                    state.forwarded_proto,
+                );
             }
         }
     }
 
     if last_error.is_some() {
-        text(StatusCode::BAD_GATEWAY, "upstream unavailable")
+        error_page(
+            StatusCode::BAD_GATEWAY,
+            &host,
+            "The app could not be reached.",
+            state.forwarded_proto,
+        )
     } else {
-        text(StatusCode::SERVICE_UNAVAILABLE, "no backend for route")
+        error_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &host,
+            "No backend is answering for this app.",
+            state.forwarded_proto,
+        )
     }
 }
 
@@ -875,6 +907,80 @@ impl Drop for MeteredStream {
         // away; a cancelled stream without usage stays unmetered.
         self.finish();
     }
+}
+
+/// A gentle error page for a `*.myc` name.
+///
+/// The frontdoor is the first thing a local browser reaches, so a missing app
+/// should still look like a place with a way home, not a bare status line.
+fn error_page(
+    status: StatusCode,
+    host: &str,
+    message: &str,
+    forwarded_proto: &str,
+) -> Response<Body> {
+    let (title, detail) = match status {
+        StatusCode::NOT_FOUND => (
+            "No app at this name",
+            "The name resolved, but nothing on this machine claims it.",
+        ),
+        StatusCode::BAD_GATEWAY => (
+            "The app stopped answering",
+            "It was registered, but the connection failed before a response arrived.",
+        ),
+        StatusCode::SERVICE_UNAVAILABLE => (
+            "The app is not answering",
+            "It is registered, but no local or mesh backend is available right now.",
+        ),
+        StatusCode::PAYLOAD_TOO_LARGE => (
+            "That request was too large",
+            "The frontdoor has a bounded body size; try a smaller request.",
+        ),
+        _ => (
+            "Something went sideways",
+            "The frontdoor could not complete this request.",
+        ),
+    };
+    let home = format!(
+        "{}://home.myc/",
+        if forwarded_proto == "https" {
+            "https"
+        } else {
+            "http"
+        }
+    );
+    let body = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{status} · {title}</title><style>\
+:root{{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",sans-serif;background:#10120f;color:#e8e4d8}}\
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:2rem}}\
+main{{width:min(38rem,100%)}}p{{color:#a9b39f;line-height:1.6}}code{{color:#d6ff9e;background:#171b14;padding:.15rem .35rem;border-radius:.25rem}}\
+.status{{font:600 .72rem/1 ui-monospace,monospace;letter-spacing:.14em;color:#a9b39f;text-transform:uppercase}}\
+h1{{margin:.65rem 0 .8rem;font-size:clamp(2rem,7vw,3.4rem);letter-spacing:-.04em;line-height:1}}\
+.home{{display:inline-block;margin-top:1rem;padding:.75rem 1rem;border:1px solid #5d6b4f;border-radius:.5rem;color:#d6ff9e;text-decoration:none}}\
+.home:hover{{background:#171b14}}.hint{{margin-top:1.2rem;color:#7f8977;font-size:.92rem}}\
+</style></head><body><main><p class=\"status\">{status} · mycelium frontdoor</p><h1>{title}</h1><p>{detail} {message} You asked for <code>{host}</code>.</p><p><a class=\"home\" href=\"{home}\">Go to home.myc</a></p><p class=\"hint\">home.myc lists the local apps and services this machine is serving. If this should be here, check the Spore manifest’s surface and anycast claim, then check its lease.</p></main></body></html>",
+        status = status.as_u16(),
+        title = escape_html(title),
+        detail = escape_html(detail),
+        message = escape_html(message),
+        host = escape_html(host),
+        home = escape_html(&home),
+    );
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| text(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn text(status: StatusCode, message: &'static str) -> Response<Body> {
@@ -1219,6 +1325,27 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(request_host(&request), "mcp.myc");
+    }
+
+    #[test]
+    fn an_unknown_name_offers_a_way_home() {
+        let response = error_page(
+            StatusCode::NOT_FOUND,
+            "<evil>.myc",
+            "No app is registered at this name.",
+            "https",
+        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response.into_body();
+        let bytes = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async { axum::body::to_bytes(body, 8192).await.unwrap() });
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("https://home.myc/"), "{text}");
+        assert!(text.contains("&lt;evil&gt;.myc"), "{text}");
+        assert!(!text.contains("<evil>.myc"), "{text}");
     }
 
     #[test]
