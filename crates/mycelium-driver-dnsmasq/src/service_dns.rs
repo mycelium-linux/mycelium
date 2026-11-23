@@ -132,20 +132,30 @@ pub(super) fn project(
             return Err("duplicate service DNS identity".into());
         }
         for endpoint in &service.value.endpoints {
-            let Some(ip) = address(endpoint) else {
+            // A literal HTTPS endpoint names its own address. An HTTP or
+            // loopback hint cannot become a DNS answer by itself, so it
+            // projects onto the observer's host records instead. The gateway
+            // owns the port; DNS owns only the host.
+            let literal = address(endpoint)
+                .filter(|ip| !(endpoint.starts_with("http://") && ip.is_loopback()));
+            let http_hint = endpoint.starts_with("http://") || endpoint.starts_with("https://");
+            if literal.is_none() && !http_hint {
                 continue;
-            };
+            }
             // An owner lease names its own node, so `kind.<node>` follows from
             // the observation itself. Requiring a separate host record meant a
             // correct lease produced no name at all.
             let matched: Vec<DnsRecord> = hosts
                 .iter()
-                .filter(|r| r.node == service.provenance.observer && r.address == ip)
+                .filter(|r| {
+                    r.node == service.provenance.observer
+                        && literal.is_none_or(|ip| r.address == ip)
+                })
                 .cloned()
                 .collect();
             let candidates = if matched.is_empty() {
-                match service.value.attributes.get("node_name") {
-                    Some(node_name) => {
+                match (service.value.attributes.get("node_name"), literal) {
+                    (Some(node_name), Some(ip)) => {
                         let mut parts = node_name.splitn(2, '.');
                         vec![DnsRecord {
                             name: node_name.clone(),
@@ -154,13 +164,14 @@ pub(super) fn project(
                             node: parts.next().unwrap_or_default().to_owned(),
                         }]
                     }
-                    None => Vec::new(),
+                    _ => Vec::new(),
                 }
             } else {
                 matched
             };
             for host in candidates {
                 let name = canonical_domain(&format!("{label}.{}", host.name))?;
+                let ip = host.address;
                 // One entrance per name/address: DNS cannot choose a port or URL.
                 if entrances
                     .insert((name.clone(), ip), endpoint.clone())
@@ -364,6 +375,27 @@ mod tests {
         assert_eq!(expiry, 1050);
         assert!(records.iter().any(|r| r.name == "unibus.neo.lab.myc"));
     }
+    #[test]
+    fn an_http_loopback_lease_projects_onto_its_observers_hosts() {
+        let mut c = catalog();
+        c.observations[0].value.names = vec!["x.myc".into()];
+        c.observations[0].value.endpoints = BTreeSet::from(["http://127.0.0.1:8799".into()]);
+        let mut s = crate::tests::settings();
+        s.service_aliases.insert("unibus-viewer".into(), "x".into());
+        s.service_index_peers
+            .insert("unibus-viewer".into(), "neo".into());
+        let hosts = vec![DnsRecord {
+            name: "neo.lab.myc".into(),
+            address: "192.0.2.12".parse().unwrap(),
+            site: "lab".into(),
+            node: "neo".into(),
+        }];
+        let (records, _) = project(&s, hosts, &c, 1000, 1200).unwrap();
+        assert!(records.iter().any(|r| r.name == "x.neo.lab.myc"));
+        assert!(records.iter().any(|r| r.name == "x.myc"));
+        assert!(!records.iter().any(|r| r.address.is_loopback()));
+    }
+
     #[test]
     fn root_index_requires_explicit_owner_and_fresh_matching_lease() {
         let mut settings = crate::tests::settings();
