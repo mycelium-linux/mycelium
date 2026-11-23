@@ -4,7 +4,7 @@
 //! module owns the parts that belong to the host: certificate material, route
 //! defaults, launchd wiring, and the privileged-socket split.
 use rcgen::{
-    date_time_ymd, BasicConstraints, CertificateParams, DistinguishedName, DnType,
+    date_time_ymd, BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
 use serde_json::{json, Value};
@@ -43,7 +43,7 @@ const LEGACY_SYSTEM_CA_PATH: &str = "/usr/local/share/ca-certificates/mycelium-g
 
 const USAGE: &str = "mycelium frontdoor status [--json] [--path MYCELIUM-HOME]\n\
 mycelium frontdoor usage [--json] [--fleet] [--path MYCELIUM-HOME]\n\
-mycelium frontdoor install [--write|--dry-run] [--trust-cert] [--listen ADDR] [--routes PATH] [--cert PATH --key PATH] [--frontdoor-bin PATH] [--ingress-bin PATH] [--path MYCELIUM-HOME]\n\
+mycelium frontdoor install [--write|--dry-run] [--trust-cert] [--listen ADDR] [--routes PATH] [--cert PATH --key PATH] [--client-ca PATH | --no-client-ca] [--frontdoor-bin PATH] [--ingress-bin PATH] [--path MYCELIUM-HOME]\n\
 mycelium frontdoor uninstall [--write|--dry-run] [--path MYCELIUM-HOME]";
 
 #[derive(Clone, Debug)]
@@ -344,6 +344,8 @@ struct InstallOptions {
     routes: Option<PathBuf>,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
+    client_ca: Option<PathBuf>,
+    no_client_ca: bool,
     frontdoor_bin: Option<PathBuf>,
     ingress_bin: Option<PathBuf>,
     listen: Option<SocketAddr>,
@@ -359,6 +361,8 @@ impl InstallOptions {
             routes: None,
             cert: None,
             key: None,
+            client_ca: None,
+            no_client_ca: false,
             frontdoor_bin: None,
             ingress_bin: None,
             listen: None,
@@ -666,9 +670,9 @@ fn render_status(value: &Value) -> Vec<String> {
         "  certificate: {} ({})",
         value["certificate"].as_str().unwrap_or("missing"),
         if value["certificate_trusted"].as_bool().unwrap_or(false) {
-            "trusted for ai.myc"
+            "trusted for route and catalog names"
         } else {
-            "not trusted"
+            "not trusted for every route or catalog name"
         }
     ));
     lines.push(format!(
@@ -688,7 +692,7 @@ fn render_status(value: &Value) -> Vec<String> {
         ));
     }
     match value["tls_verified"].as_bool() {
-        Some(true) => lines.push("  tls: certificate and ai.myc identity verified".into()),
+        Some(true) => lines.push("  tls: certificate and route names verified".into()),
         _ => {
             if let Some(error) = value["tls_error"].as_str() {
                 lines.push(format!("  tls: {error}"));
@@ -711,7 +715,9 @@ pub async fn snapshot(home: &Path) -> Value {
     let frontdoor_listening = tcp_probe(paths.listen);
     let ingress_https_listening = tcp_probe(https_listen());
     let ingress_http_listening = tcp_probe(http_listen());
-    let certificate_trusted = paths.cert.is_file() && certificate_trusted(&paths.cert);
+    let verify_names = verification_names(&certificate_hosts(&paths));
+    let certificate_trusted =
+        paths.cert.is_file() && certificate_trusted(&paths.cert, &verify_names);
     let health = if frontdoor_listening {
         probe(paths.listen).await.ok()
     } else {
@@ -798,7 +804,15 @@ async fn install_with_options(options: InstallOptions) -> Result<Vec<String>, St
     let paths = Paths::discover(&options.home);
     let listen = requested_listen;
     let routes = prepare_routes(&paths, &options, &mut actions)?;
-    let material = prepare_certificate(&paths, &options, &routes, &mut actions)?;
+    let material = prepare_certificate(&paths, &options, &mut actions)?;
+    let client_ca = if options.no_client_ca {
+        None
+    } else {
+        options.client_ca.clone().or_else(|| {
+            let ca = paths.home.join("pki/ca.pem");
+            ca.is_file().then_some(ca)
+        })
+    };
     // Stop the old lifecycle before preflight: it may still own :8443, and the
     // new label is not recognized as the same service by launchd/systemd.
     retire_legacy_services(options.dry_run, &mut actions)?;
@@ -843,7 +857,14 @@ async fn install_with_options(options: InstallOptions) -> Result<Vec<String>, St
     create_private_dir(&paths.dir)?;
     let frontdoor_bin = install_binary(&frontdoor_source, &paths.frontdoor_bin)?;
     let ingress_bin = install_binary(&ingress_source, &paths.ingress_bin)?;
-    install_frontdoor_service(&paths, listen, &frontdoor_bin, &routes, &material)?;
+    install_frontdoor_service(
+        &paths,
+        listen,
+        &frontdoor_bin,
+        &routes,
+        &material,
+        client_ca.as_deref(),
+    )?;
     install_ingress_services(&paths, listen, &ingress_bin)?;
     if options.trust {
         trust_certificate(material.trust_anchor())?;
@@ -862,9 +883,10 @@ async fn install_with_options(options: InstallOptions) -> Result<Vec<String>, St
     tls_chain_verified(&paths, https_listen()).map_err(|error| {
         format!("installed the frontdoor, but the :{HTTPS_PORT} TLS check failed: {error}")
     })?;
-    if options.trust && !certificate_trusted(&material.cert) {
+    let verify_names = verification_names(&certificate_hosts(&paths));
+    if options.trust && !certificate_trusted(&material.cert, &verify_names) {
         return Err(format!(
-            "certificate {} does not verify for ai.myc after trust installation",
+            "certificate {} does not verify for every route name after trust installation",
             material.cert.display()
         ));
     }
@@ -884,14 +906,14 @@ async fn install_with_options(options: InstallOptions) -> Result<Vec<String>, St
     if options.trust {
         lines.push(format!(
             "  certificate trust: {}",
-            if certificate_trusted(&material.cert) {
-                "verified for ai.myc"
+            if certificate_trusted(&material.cert, &verify_names) {
+                "verified for route and catalog names"
             } else {
                 "was installed but could not be verified"
             }
         ));
-    } else if certificate_trusted(&material.cert) {
-        lines.push("  certificate trust: already verified for ai.myc".into());
+    } else if certificate_trusted(&material.cert, &verify_names) {
+        lines.push("  certificate trust: already verified for route and catalog names".into());
     } else {
         lines.push("  certificate trust: not installed; run `mycelium frontdoor install --write --trust-cert` or use `mycelium doctor --fix --trust-cert`".into());
     }
@@ -1015,6 +1037,13 @@ fn parse_install(args: &[String]) -> Result<InstallOptions, String> {
                 index += 1;
                 options.key = Some(expand_home(args.get(index).ok_or("--key requires a path")?));
             }
+            "--client-ca" => {
+                index += 1;
+                options.client_ca = Some(expand_home(
+                    args.get(index).ok_or("--client-ca requires a path")?,
+                ));
+            }
+            "--no-client-ca" => options.no_client_ca = true,
             "--frontdoor-bin" | "--gateway-bin" => {
                 index += 1;
                 options.frontdoor_bin = Some(expand_home(
@@ -1037,7 +1066,6 @@ fn parse_install(args: &[String]) -> Result<InstallOptions, String> {
 fn prepare_certificate(
     paths: &Paths,
     options: &InstallOptions,
-    routes: &Path,
     actions: &mut Vec<String>,
 ) -> Result<CertificateMaterial, String> {
     if let (Some(cert), Some(key)) = (&options.cert, &options.key) {
@@ -1064,12 +1092,45 @@ fn prepare_certificate(
         ));
     }
     if cert_exists {
-        return Ok(CertificateMaterial {
-            cert: paths.cert.clone(),
-            key: paths.key.clone(),
-            ca: paths.ca.is_file().then(|| paths.ca.clone()),
-            generated: false,
-        });
+        let hosts = certificate_hosts(paths);
+        if certificate_covers(&paths.cert, &certificate_names(&hosts)) {
+            return Ok(CertificateMaterial {
+                cert: paths.cert.clone(),
+                key: paths.key.clone(),
+                ca: paths.ca.is_file().then(|| paths.ca.clone()),
+                generated: false,
+            });
+        }
+        if options.dry_run {
+            actions.push(format!(
+                "would renew {} for the current route and catalog names",
+                paths.cert.display()
+            ));
+            return Ok(CertificateMaterial {
+                cert: paths.cert.clone(),
+                key: paths.key.clone(),
+                ca: paths.ca.is_file().then(|| paths.ca.clone()),
+                generated: true,
+            });
+        }
+        let ca_key = paths.ca.with_file_name("ca-key.pem");
+        let material = if paths.ca.is_file() && ca_key.is_file() {
+            actions.push(format!(
+                "renewed {} with the existing local CA",
+                paths.cert.display()
+            ));
+            renew_certificate(&paths.dir, &hosts)?
+        } else {
+            // Older installs discarded the CA key. A leaf renewal is impossible
+            // there, so make a new CA once; --trust-cert then installs the new
+            // anchor without the old manual `mv` dance.
+            actions.push(format!(
+                "regenerated the local CA and {} because ca-key.pem was missing",
+                paths.cert.display()
+            ));
+            generate_certificate(&paths.dir, &hosts)?
+        };
+        return Ok(material);
     }
     if options.dry_run {
         actions.push(format!(
@@ -1083,7 +1144,7 @@ fn prepare_certificate(
             generated: true,
         });
     }
-    let material = generate_certificate(&paths.dir, &route_hosts(routes))?;
+    let material = generate_certificate(&paths.dir, &certificate_hosts(paths))?;
     actions.push(format!(
         "generated local certificate {}",
         material.cert.display()
@@ -1154,7 +1215,7 @@ impl CertificateMaterial {
     }
 }
 
-fn generate_certificate(dir: &Path, route_hosts: &[String]) -> Result<CertificateMaterial, String> {
+fn generate_certificate(dir: &Path, hosts: &[String]) -> Result<CertificateMaterial, String> {
     create_private_dir(dir)?;
     let ca_key = KeyPair::generate().map_err(|error| format!("generate CA key: {error}"))?;
     let mut ca_params = CertificateParams::new(Vec::new())
@@ -1173,9 +1234,36 @@ fn generate_certificate(dir: &Path, route_hosts: &[String]) -> Result<Certificat
     let ca = ca_params
         .self_signed(&ca_key)
         .map_err(|error| format!("sign CA: {error}"))?;
+    write_file(dir.join("ca.pem").as_path(), ca.pem().as_bytes(), 0o644)?;
+    write_file(
+        dir.join("ca-key.pem").as_path(),
+        ca_key.serialize_pem().as_bytes(),
+        0o600,
+    )?;
+    issue_certificate(dir, &ca, &ca_key, hosts)
+}
 
+fn renew_certificate(dir: &Path, hosts: &[String]) -> Result<CertificateMaterial, String> {
+    let ca_pem = fs::read_to_string(dir.join("ca.pem"))
+        .map_err(|error| format!("read {}: {error}", dir.join("ca.pem").display()))?;
+    let ca_key_pem = fs::read_to_string(dir.join("ca-key.pem"))
+        .map_err(|error| format!("read {}: {error}", dir.join("ca-key.pem").display()))?;
+    let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|error| format!("read CA key: {error}"))?;
+    let ca = CertificateParams::from_ca_cert_pem(&ca_pem)
+        .map_err(|error| format!("read CA certificate: {error}"))?
+        .self_signed(&ca_key)
+        .map_err(|error| format!("reconstruct CA: {error}"))?;
+    issue_certificate(dir, &ca, &ca_key, hosts)
+}
+
+fn issue_certificate(
+    dir: &Path,
+    ca: &Certificate,
+    ca_key: &KeyPair,
+    hosts: &[String],
+) -> Result<CertificateMaterial, String> {
     let leaf_key = KeyPair::generate().map_err(|error| format!("generate leaf key: {error}"))?;
-    let mut leaf_params = CertificateParams::new(certificate_names(route_hosts))
+    let mut leaf_params = CertificateParams::new(certificate_names(hosts))
         .map_err(|error| format!("create leaf parameters: {error}"))?;
     leaf_params.distinguished_name = DistinguishedName::new();
     leaf_params
@@ -1186,13 +1274,12 @@ fn generate_certificate(dir: &Path, route_hosts: &[String]) -> Result<Certificat
     leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     leaf_params.not_after = date_time_ymd(2036, 1, 1);
     let leaf = leaf_params
-        .signed_by(&leaf_key, &ca, &ca_key)
+        .signed_by(&leaf_key, ca, ca_key)
         .map_err(|error| format!("sign leaf: {error}"))?;
 
     let ca_path = dir.join("ca.pem");
     let cert_path = dir.join("server.pem");
     let key_path = dir.join("server-key.pem");
-    write_file(&ca_path, ca.pem().as_bytes(), 0o644)?;
     write_file(
         &cert_path,
         format!("{}{}", leaf.pem(), ca.pem()).as_bytes(),
@@ -1230,6 +1317,98 @@ fn certificate_names(route_hosts: &[String]) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// Every name the frontdoor may serve: configured routes plus names claimed by
+/// the service catalog. Derived names are not in `routes.json`, so reading only
+/// that file is what left `deadwax.myc` and `hue.myc` outside the SAN.
+fn certificate_hosts(paths: &Paths) -> Vec<String> {
+    let mut hosts = route_hosts(&paths.routes);
+    hosts.extend(catalog_hosts(&paths.home));
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+fn catalog_hosts(home: &Path) -> Vec<String> {
+    let path = home.join("application-services.json");
+    let Ok(bytes) = fs::read(&path) else {
+        return Vec::new();
+    };
+    let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+        return Vec::new();
+    };
+    document["observations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|observation| {
+            observation["value"]["names"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Names a certificate verifier should actually test. A wildcard is a SAN
+/// pattern, never a host to connect to; `*.myc` also does not cover
+/// `service.myc` in OpenSSL because it is a single-label wildcard.
+fn verification_names(hosts: &[String]) -> Vec<String> {
+    let mut names = certificate_names(hosts);
+    names.retain(|name| !name.contains('*') && name.parse::<std::net::IpAddr>().is_err());
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn certificate_covers(cert: &Path, names: &[String]) -> bool {
+    let output = Command::new("openssl")
+        .args(["x509", "-in"])
+        .arg(cert)
+        .args(["-noout", "-ext", "subjectAltName"])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut sans = text
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+            if let Some(index) = part.find("DNS:") {
+                return Some(part[index + 4..].trim().to_owned());
+            }
+            part.find("IP Address:")
+                .map(|index| part[index + "IP Address:".len()..].trim().to_owned())
+        })
+        .collect::<Vec<_>>();
+    sans.sort();
+    sans.dedup();
+    names
+        .iter()
+        .all(|name| sans.iter().any(|pattern| hostname_matches(pattern, name)))
+}
+
+fn hostname_matches(pattern: &str, host: &str) -> bool {
+    if pattern.eq_ignore_ascii_case(host) {
+        return true;
+    }
+    let Some(suffix) = pattern.strip_prefix("*.") else {
+        return false;
+    };
+    let Some(prefix) = host
+        .strip_suffix(suffix)
+        .and_then(|rest| rest.strip_suffix('.'))
+    else {
+        return false;
+    };
+    !prefix.is_empty() && !prefix.contains('.')
 }
 
 fn route_hosts(path: &Path) -> Vec<String> {
@@ -1316,10 +1495,17 @@ fn render_frontdoor_plist(
     frontdoor_bin: &Path,
     routes: &Path,
     material: &CertificateMaterial,
+    client_ca: Option<&Path>,
     listen: SocketAddr,
 ) -> String {
+    let client_ca = client_ca.map_or_else(String::new, |ca| {
+        format!(
+            "<string>--client-ca</string><string>{}</string>",
+            xml(&ca.display().to_string())
+        )
+    });
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array><string>{frontdoor}</string><string>--listen</string><string>{listen}</string><string>--routes</string><string>{routes}</string><string>--usage</string><string>{usage}</string><string>--reload-secs</string><string>1</string><string>--tls-cert</string><string>{cert}</string><string>--tls-key</string><string>{key}</string></array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>\n<key>StandardOutPath</key><string>{log}</string>\n<key>StandardErrorPath</key><string>{log}</string>\n</dict></plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array><string>{frontdoor}</string><string>--listen</string><string>{listen}</string><string>--routes</string><string>{routes}</string><string>--usage</string><string>{usage}</string><string>--reload-secs</string><string>1</string><string>--tls-cert</string><string>{cert}</string><string>--tls-key</string><string>{key}</string>{client_ca}</array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>\n<key>StandardOutPath</key><string>{log}</string>\n<key>StandardErrorPath</key><string>{log}</string>\n</dict></plist>\n",
         label = xml(FRONTDOOR_LABEL),
         frontdoor = xml(&frontdoor_bin.display().to_string()),
         listen = listen,
@@ -1327,6 +1513,7 @@ fn render_frontdoor_plist(
         usage = xml(&paths.usage.display().to_string()),
         cert = xml(&material.cert.display().to_string()),
         key = xml(&material.key.display().to_string()),
+        client_ca = client_ca,
         log = xml(&paths.dir.join("frontdoor.log").display().to_string()),
     )
 }
@@ -1379,11 +1566,15 @@ fn render_frontdoor_unit(
     frontdoor_bin: &Path,
     routes: &Path,
     material: &CertificateMaterial,
+    client_ca: Option<&Path>,
 ) -> Result<String, String> {
     let user = current_user()?;
     let group = current_group()?;
+    let client_ca = client_ca.map_or_else(String::new, |ca| {
+        format!(" --client-ca {}", systemd_quote(&ca.display().to_string()))
+    });
     Ok(format!(
-        "[Unit]\nDescription=Mycelium local .myc HTTPS frontdoor\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={user}\nGroup={group}\nEnvironment={home}\nExecStart={frontdoor} --listen {listen} --routes {routes} --usage {usage} --reload-secs 1 --tls-cert {cert} --tls-key {key}\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Mycelium local .myc HTTPS frontdoor\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={user}\nGroup={group}\nEnvironment={home}\nExecStart={frontdoor} --listen {listen} --routes {routes} --usage {usage} --reload-secs 1 --tls-cert {cert} --tls-key {key}{client_ca}\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n",
         home = systemd_quote(&format!(
             "HOME={}",
             user_home()?.display()
@@ -1393,6 +1584,7 @@ fn render_frontdoor_unit(
         usage = systemd_quote(&usage.display().to_string()),
         cert = systemd_quote(&material.cert.display().to_string()),
         key = systemd_quote(&material.key.display().to_string()),
+        client_ca = client_ca,
     ))
 }
 
@@ -1493,17 +1685,24 @@ fn install_frontdoor_service(
     frontdoor_bin: &Path,
     routes: &Path,
     material: &CertificateMaterial,
+    client_ca: Option<&Path>,
 ) -> Result<(), String> {
     match platform()? {
         Platform::Macos => {
             write_named_plist(
                 FRONTDOOR_LABEL,
-                &render_frontdoor_plist(paths, frontdoor_bin, routes, material, listen),
+                &render_frontdoor_plist(paths, frontdoor_bin, routes, material, client_ca, listen),
             )?;
         }
         Platform::Linux => {
-            let unit =
-                render_frontdoor_unit(&paths.usage, listen, frontdoor_bin, routes, material)?;
+            let unit = render_frontdoor_unit(
+                &paths.usage,
+                listen,
+                frontdoor_bin,
+                routes,
+                material,
+                client_ca,
+            )?;
             install_system_unit(&paths.dir, FRONTDOOR_UNIT, &unit)?;
         }
     }
@@ -1978,22 +2177,25 @@ fn tls_chain_verified(paths: &Paths, address: SocketAddr) -> Result<(), String> 
     if !anchor.is_file() {
         return Err(format!("trust anchor missing: {}", anchor.display()));
     }
-    tls_verified(address, Some(anchor))
+    for name in verification_names(&certificate_hosts(paths)) {
+        tls_verified(address, Some(anchor), &name)?;
+    }
+    Ok(())
 }
 
-fn tls_verified(address: SocketAddr, anchor: Option<&Path>) -> Result<(), String> {
+fn tls_verified(address: SocketAddr, anchor: Option<&Path>, name: &str) -> Result<(), String> {
     let mut command = Command::new("openssl");
     command
         .args(["s_client", "-connect"])
         .arg(address.ip().to_string())
         .args(["-port"])
         .arg(address.port().to_string())
-        .args(["-servername", "ai.myc"]);
+        .args(["-servername", name]);
     if let Some(anchor) = anchor {
         command.arg("-CAfile").arg(anchor);
     }
     let output = command
-        .args(["-verify_return_error", "-verify_hostname", "ai.myc"])
+        .args(["-verify_return_error", "-verify_hostname", name])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|error| format!("run openssl s_client: {error}"))?;
@@ -2006,7 +2208,9 @@ fn tls_verified(address: SocketAddr, anchor: Option<&Path>) -> Result<(), String
         .find(|line| line.contains("verify error") || line.contains("connect:"))
         .unwrap_or("TLS handshake failed")
         .trim();
-    Err(format!("{address} certificate check failed: {detail}"))
+    Err(format!(
+        "{address} certificate check failed for {name}: {detail}"
+    ))
 }
 
 fn system_daemon_path() -> Option<PathBuf> {
@@ -2024,21 +2228,30 @@ fn system_daemon_path() -> Option<PathBuf> {
     None
 }
 
-fn certificate_trusted(cert: &Path) -> bool {
+fn certificate_trusted(cert: &Path, names: &[String]) -> bool {
     if !cert.is_file() {
         return false;
     }
+    let names = if names.is_empty() {
+        vec!["ai.myc".to_owned()]
+    } else {
+        names.to_vec()
+    };
     match platform() {
-        Ok(Platform::Macos) => Command::new("security")
-            .args(["verify-cert", "-c"])
-            .arg(cert)
-            .args(["-p", "ssl", "-s", "ai.myc"])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false),
+        Ok(Platform::Macos) => names.iter().all(|name| {
+            Command::new("security")
+                .args(["verify-cert", "-c"])
+                .arg(cert)
+                .args(["-p", "ssl", "-s", name])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        }),
         Ok(Platform::Linux) => {
             let address = installed_listen().unwrap_or_else(default_listen);
-            tls_verified(address, None).is_ok()
+            names
+                .iter()
+                .all(|name| tls_verified(address, None, name).is_ok())
         }
         Err(_) => false,
     }
@@ -2440,15 +2653,67 @@ mod tests {
         assert_eq!(chain.matches("BEGIN CERTIFICATE").count(), 2);
         let key = fs::read_to_string(&material.key).unwrap();
         assert!(key.contains("PRIVATE KEY"));
+        let ca_key = fs::read_to_string(dir.join("ca-key.pem")).unwrap();
+        assert!(ca_key.contains("PRIVATE KEY"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&material.key).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
+            for private in [&material.key, &dir.join("ca-key.pem")] {
+                assert_eq!(
+                    fs::metadata(private).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renewal_keeps_the_same_ca_and_adds_new_names() {
+        let dir = temporary_dir("renew");
+        let first = generate_certificate(&dir, &["home.myc".to_owned()]).unwrap();
+        let ca_before = fs::read(first.ca.as_ref().unwrap()).unwrap();
+        let renewed = renew_certificate(&dir, &["drawbridge.dev.myc".to_owned()]).unwrap();
+        assert_eq!(
+            fs::read(renewed.ca.as_ref().unwrap()).unwrap(),
+            ca_before,
+            "renewing a leaf must not replace the trust anchor"
+        );
+        assert!(certificate_covers(
+            &renewed.cert,
+            &certificate_names(&["drawbridge.dev.myc".to_owned()])
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn single_label_wildcards_do_not_cover_multi_label_names() {
+        assert!(hostname_matches("*.myc", "home.myc"));
+        assert!(!hostname_matches("*.myc", "drawbridge.dev.myc"));
+        assert!(hostname_matches("*.dev.myc", "drawbridge.dev.myc"));
+    }
+
+    #[test]
+    fn catalog_names_join_configured_routes() {
+        let home = temporary_dir("catalog-hosts");
+        let dir = home.join("frontdoor");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            home.join("application-services.json"),
+            r#"{"observations":[{"value":{"names":["deadwax.myc","hue.myc"]}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("routes.json"),
+            r#"{"routes":[{"name":"home","hosts":["home.myc"]}]}"#,
+        )
+        .unwrap();
+        let paths = Paths::discover(&home);
+        let hosts = certificate_hosts(&paths);
+        for expected in ["home.myc", "deadwax.myc", "hue.myc"] {
+            assert!(hosts.contains(&expected.to_owned()), "{expected} missing");
+        }
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -2484,12 +2749,23 @@ mod tests {
             Path::new("/tmp/mycelium-frontdoor"),
             &paths.routes,
             &material,
+            None,
+            listen,
+        );
+        let with_mtls = render_frontdoor_plist(
+            &paths,
+            Path::new("/tmp/mycelium-frontdoor"),
+            &paths.routes,
+            &material,
+            Some(Path::new("/tmp/mesh-ca.pem")),
             listen,
         );
         let https = render_ingress_https_plist(&paths, Path::new("/tmp/mycelium-ingress"), listen);
         let http = render_ingress_http_plist(&paths, Path::new("/tmp/mycelium-ingress"));
         assert!(frontdoor.contains("127.0.0.1:9443"));
         assert!(frontdoor.contains("--tls-cert"));
+        assert!(with_mtls.contains("--client-ca"));
+        assert!(with_mtls.contains("/tmp/mesh-ca.pem"));
         assert!(https.contains("SockServiceName"));
         assert!(https.contains("<integer>443</integer>"));
         assert!(https.contains("127.0.0.1:9443"));
@@ -2514,6 +2790,7 @@ mod tests {
             Path::new("/home/a/.mycelium/bin/mycelium-frontdoor"),
             Path::new("/home/a/.mycelium/frontdoor/routes.json"),
             &material,
+            None,
         )
         .unwrap();
         assert!(frontdoor.contains("--listen 127.0.0.1:10443"));
