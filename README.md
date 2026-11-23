@@ -129,6 +129,18 @@ mycelium frontdoor install --write --trust-cert
 mycelium doctor
 ```
 
+A host runtime that installs a new `.myc` name can extend the certificate
+without repeating the trust step:
+
+```sh
+mycelium frontdoor renew --write
+```
+
+Renewal reuses the local CA and only reissues the leaf. If `ca-key.pem` is
+missing from an older installation, `renew` refuses to replace the trust anchor
+until the operator runs the one-time `frontdoor install --write --trust-cert`
+migration (or passes `--allow-new-ca` knowingly).
+
 `mycelium doctor` checks the daemon, `.myc` resolution, the frontdoor services,
 the frontdoor listeners, certificate trust, HTTPS health, whether the installed
 release is the latest signed release for the channel, and the macOS

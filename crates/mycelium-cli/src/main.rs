@@ -144,6 +144,7 @@ usage:
   mycelium pulse toggle ID --write
   mycelium pulse runs [ID] [--limit N] [--json]
   mycelium frontdoor install [--write|--dry-run] [--trust-cert] [--routes PATH] [--cert PATH --key PATH] [--frontdoor-bin PATH] [--forwarder-bin PATH] [--path MYCELIUM-HOME]
+  mycelium frontdoor renew [--write|--dry-run] [--trust-cert] [--allow-new-ca] [--path MYCELIUM-HOME]
   mycelium frontdoor uninstall [--write|--dry-run]
   (the deprecated `mycelium gateway` alias still works)
   mycelium doctor [--json] [--fix] [--trust-cert]

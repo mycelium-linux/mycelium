@@ -44,6 +44,7 @@ const LEGACY_SYSTEM_CA_PATH: &str = "/usr/local/share/ca-certificates/mycelium-g
 const USAGE: &str = "mycelium frontdoor status [--json] [--path MYCELIUM-HOME]\n\
 mycelium frontdoor usage [--json] [--fleet] [--path MYCELIUM-HOME]\n\
 mycelium frontdoor install [--write|--dry-run] [--trust-cert] [--listen ADDR] [--routes PATH] [--cert PATH --key PATH] [--client-ca PATH | --no-client-ca] [--frontdoor-bin PATH] [--ingress-bin PATH] [--path MYCELIUM-HOME]\n\
+mycelium frontdoor renew [--write|--dry-run] [--trust-cert] [--allow-new-ca] [--path MYCELIUM-HOME]\n\
 mycelium frontdoor uninstall [--write|--dry-run] [--path MYCELIUM-HOME]";
 
 #[derive(Clone, Debug)]
@@ -382,6 +383,7 @@ pub async fn run(args: &[String]) -> Result<Vec<String>, String> {
         "status" | "" => status(rest).await,
         "usage" => usage(rest).await,
         "install" => install(rest).await,
+        "renew" => renew(rest).await,
         "uninstall" => uninstall(rest),
         "help" | "--help" | "-h" => Ok(USAGE.lines().map(str::to_owned).collect()),
         other => Err(format!(
@@ -761,6 +763,134 @@ pub async fn snapshot(home: &Path) -> Value {
 
 pub async fn install(args: &[String]) -> Result<Vec<String>, String> {
     install_with_options(parse_install(args)?).await
+}
+
+#[derive(Clone, Debug)]
+struct RenewOptions {
+    home: PathBuf,
+    trust: bool,
+    allow_new_ca: bool,
+    write: bool,
+    dry_run: bool,
+}
+
+impl RenewOptions {
+    fn new() -> Self {
+        Self {
+            home: myceliumd::home_dir(),
+            trust: false,
+            allow_new_ca: false,
+            write: false,
+            dry_run: false,
+        }
+    }
+}
+
+fn parse_renew(args: &[String]) -> Result<RenewOptions, String> {
+    let mut options = RenewOptions::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--write" => options.write = true,
+            "--dry-run" => options.dry_run = true,
+            "--trust-cert" => options.trust = true,
+            "--allow-new-ca" => options.allow_new_ca = true,
+            "--path" => {
+                index += 1;
+                options.home = expand_home(args.get(index).ok_or("--path requires a directory")?);
+            }
+            other => return Err(format!("unknown frontdoor renew argument `{other}`")),
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
+/// Renew the frontdoor leaf certificate for the names the host now serves.
+///
+/// This is the automatic path a runtime calls after installing a Spore that
+/// claims a new `.myc` name. It deliberately renews the leaf rather than the
+/// trust anchor: replacing the CA on every install would silently invalidate a
+/// trust decision the operator already made.
+async fn renew(args: &[String]) -> Result<Vec<String>, String> {
+    let options = parse_renew(args)?;
+    if options.write && options.dry_run {
+        return Err("frontdoor renew accepts only one of --write or --dry-run".into());
+    }
+    if !options.write && !options.dry_run {
+        return Err("frontdoor renew requires --write or --dry-run".into());
+    }
+    if !Service::Frontdoor.installed() {
+        return Err(
+            "the frontdoor is not installed; run `mycelium frontdoor install --write`".into(),
+        );
+    }
+    let paths = Paths::discover(&options.home);
+    if !paths.cert.is_file() || !paths.key.is_file() {
+        return Err(format!(
+            "frontdoor certificate pair is incomplete: {} / {}; run `mycelium frontdoor install --write --trust-cert`",
+            paths.cert.display(),
+            paths.key.display()
+        ));
+    }
+    let hosts = certificate_hosts(&paths);
+    let names = certificate_names(&hosts);
+    if certificate_covers(&paths.cert, &names) {
+        return Ok(vec![format!(
+            "certificate already covers every route and catalog name ({})",
+            paths.cert.display()
+        )]);
+    }
+    if options.dry_run {
+        return Ok(vec![format!(
+            "would renew {} for {} route and catalog names",
+            paths.cert.display(),
+            hosts.len()
+        )]);
+    }
+    let ca_key = paths.ca.with_file_name("ca-key.pem");
+    let reused_ca = paths.ca.is_file() && ca_key.is_file();
+    let material = if reused_ca {
+        renew_certificate(&paths.dir, &hosts)?
+    } else if options.allow_new_ca {
+        generate_certificate(&paths.dir, &hosts)?
+    } else {
+        return Err(format!(
+            "cannot renew {} without replacing the local CA: {} is missing; run `mycelium frontdoor install --write --trust-cert` once to migrate, or pass --allow-new-ca to replace it knowingly",
+            paths.cert.display(),
+            ca_key.display()
+        ));
+    };
+    if options.trust {
+        trust_certificate(material.trust_anchor())?;
+    }
+    restart_frontdoor()?;
+    wait_for_listener(paths.listen)?;
+
+    let verify_names = verification_names(&hosts);
+    let trusted = certificate_trusted(&material.cert, &verify_names);
+    let mut lines = vec![format!(
+        "renewed {} for {} route and catalog names",
+        material.cert.display(),
+        hosts.len()
+    )];
+    if reused_ca {
+        lines.push(format!(
+            "  certificate authority: reused {}",
+            material.trust_anchor().display()
+        ));
+    } else {
+        lines.push(format!(
+            "  certificate authority: replaced {}",
+            material.trust_anchor().display()
+        ));
+    }
+    if trusted {
+        lines.push("  certificate trust: verified for route and catalog names".into());
+    } else {
+        lines.push("  certificate trust: not installed; run `mycelium frontdoor install --write --trust-cert`".into());
+    }
+    Ok(lines)
 }
 
 pub async fn install_default(home: &Path, trust: bool) -> Result<Vec<String>, String> {
@@ -1812,6 +1942,16 @@ fn run_privileged(program: &str, args: &[String]) -> Result<(), String> {
     ))
 }
 
+fn restart_frontdoor() -> Result<(), String> {
+    match platform()? {
+        Platform::Macos => bootstrap(FRONTDOOR_LABEL, &launch_agent_path(FRONTDOOR_LABEL)?),
+        Platform::Linux => run_privileged(
+            "systemctl",
+            &["restart".to_owned(), FRONTDOOR_UNIT.to_owned()],
+        ),
+    }
+}
+
 fn start_services() -> Result<(), String> {
     match platform()? {
         Platform::Macos => {
@@ -2666,6 +2806,23 @@ mod tests {
             }
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renew_parsing_defaults_to_leaf_only_and_refuses_unknown_flags() {
+        let options =
+            parse_renew(&["--write".into(), "--path".into(), "/tmp/mycelium".into()]).unwrap();
+        assert!(options.write);
+        assert!(!options.dry_run);
+        assert!(!options.allow_new_ca);
+        assert_eq!(options.home, Path::new("/tmp/mycelium"));
+        assert!(
+            parse_renew(&["--allow-new-ca".into()])
+                .unwrap()
+                .allow_new_ca
+        );
+        assert!(parse_renew(&["--dry-run".into(), "--write".into()]).is_ok());
+        assert!(parse_renew(&["--not-a-flag".into()]).is_err());
     }
 
     #[test]
