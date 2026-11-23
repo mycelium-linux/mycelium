@@ -41,6 +41,20 @@ impl RouteTable {
         self.routes.iter().chain(self.derived.iter())
     }
 
+    /// Whether any configured or derived route owns this host.
+    ///
+    /// `select` falls back to the default route; this is the check that keeps
+    /// an unknown `*.myc` name from being proxied to that default by accident.
+    pub fn covers(&self, host: &str) -> bool {
+        let host = normalize_host(host);
+        self.all().any(|route| {
+            route
+                .hosts
+                .iter()
+                .any(|pattern| host_matches(pattern, &host))
+        })
+    }
+
     pub fn select(&self, host: &str) -> Option<Route> {
         let host = normalize_host(host);
         let default = self
@@ -231,6 +245,20 @@ mod tests {
         let mut table = RouteTable::new(vec![route("wild", &["*.myc"], 0)], None);
         table.set_discovered(&index_with(&[("files.myc", "files")]));
         assert_eq!(table.derived_routes(), 0);
+    }
+
+    #[test]
+    fn an_unknown_myc_name_is_not_covered_by_the_default_route() {
+        let table = RouteTable::new(
+            vec![route("default", &["ai.myc"], 0)],
+            Some("default".into()),
+        );
+        assert!(table.covers("ai.myc"));
+        assert!(!table.covers("imfuckinglost.myc"));
+        assert_eq!(
+            table.select("imfuckinglost.myc").map(|route| route.name),
+            Some("default".into())
+        );
     }
 
     #[test]
