@@ -37,6 +37,7 @@ const SYSTEM_CA_PATH: &str = "/usr/local/share/ca-certificates/mycelium-frontdoo
 const LEGACY_FRONTDOOR_LABEL: &str = "dev.fpl.mycelium-gateway";
 const LEGACY_FRONTDOOR_UNIT: &str = "mycelium-gateway.service";
 const LEGACY_HTTPS_LABEL: &str = "dev.fpl.mycelium-https";
+const LEGACY_HTTP_REDIRECT_LABEL: &str = "dev.fpl.mycelium-http-redirect";
 const LEGACY_HTTPS_SOCKET_UNIT: &str = "mycelium-https.socket";
 const LEGACY_HTTPS_SERVICE_UNIT: &str = "mycelium-https.service";
 const LEGACY_SYSTEM_CA_PATH: &str = "/usr/local/share/ca-certificates/mycelium-gateway.crt";
@@ -142,7 +143,11 @@ fn retire_legacy_services(dry_run: bool, actions: &mut Vec<String>) -> Result<()
     match platform()? {
         Platform::Macos => {
             let domain = launch_domain()?;
-            for label in [LEGACY_FRONTDOOR_LABEL, LEGACY_HTTPS_LABEL] {
+            for label in [
+                LEGACY_FRONTDOOR_LABEL,
+                LEGACY_HTTPS_LABEL,
+                LEGACY_HTTP_REDIRECT_LABEL,
+            ] {
                 let path = launch_agent_path(label)?;
                 if !path.is_file() {
                     continue;
@@ -1800,6 +1805,7 @@ fn legacy_service_paths() -> Result<Vec<PathBuf>, String> {
         Platform::Macos => vec![
             launch_agent_path(LEGACY_FRONTDOOR_LABEL)?,
             launch_agent_path(LEGACY_HTTPS_LABEL)?,
+            launch_agent_path(LEGACY_HTTP_REDIRECT_LABEL)?,
         ],
         Platform::Linux => vec![
             systemd_unit_path(LEGACY_FRONTDOOR_UNIT),
@@ -2359,6 +2365,7 @@ fn system_daemon_path() -> Option<PathBuf> {
         INGRESS_HTTP_LABEL,
         LEGACY_HTTPS_LABEL,
         LEGACY_FRONTDOOR_LABEL,
+        LEGACY_HTTP_REDIRECT_LABEL,
     ] {
         let path = Path::new("/Library/LaunchDaemons").join(format!("{label}.plist"));
         if path.is_file() {
@@ -2488,6 +2495,7 @@ fn uninstall(args: &[String]) -> Result<Vec<String>, String> {
                 INGRESS_HTTP_LABEL,
                 LEGACY_FRONTDOOR_LABEL,
                 LEGACY_HTTPS_LABEL,
+                LEGACY_HTTP_REDIRECT_LABEL,
             ] {
                 let _ = Command::new("launchctl")
                     .args(["bootout", &format!("{domain}/{label}")])
