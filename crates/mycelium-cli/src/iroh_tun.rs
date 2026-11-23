@@ -113,16 +113,30 @@ fn render(value: &Value) -> Vec<String> {
             overlay
         }
     ));
-    let learned = value["routes"].as_array().map(Vec::len).unwrap_or(0);
+    let learned = value["peer_routes"]
+        .as_u64()
+        .map_or_else(
+            || value["routes"].as_array().map(Vec::len).unwrap_or(0),
+            |count| count as usize,
+        );
+    let self_routes = value["self_routes"].as_u64().unwrap_or(0);
     let installed = value["kernel_routes"].as_array().map(Vec::len).unwrap_or(0);
     lines.push(format!(
-        "  routes    {learned} learned, {installed} in the kernel, {} refresh failure(s), status {}s old",
+        "  routes    {learned} peer prefix(es) learned, {installed} in the kernel, {} refresh failure(s), status {}s old",
         value["refresh_failures"].as_u64().unwrap_or(0),
         value["status_age_secs"]
             .as_u64()
             .map(|age| age.to_string())
             .unwrap_or_else(|| "never".into())
     ));
+    if self_routes > 0 {
+        // The child learned the prefix this node answers for. It is a route to
+        // itself, so it is not a peer; saying "learned" here was how a
+        // single-member overlay looked healthy.
+        lines.push(format!(
+            "  self      {self_routes} route(s) point at this node's own endpoint; not peers"
+        ));
+    }
     if let Some(error) = value["kernel_error"].as_str() {
         lines.push(format!("  route error {error}"));
     }
@@ -291,7 +305,29 @@ mod tests {
         assert!(lines.contains("295ca41d…"), "{lines}");
         assert!(lines.contains("publishing iroh-tun"), "{lines}");
         assert!(lines.contains("10.42.0.0/24"), "{lines}");
-        assert!(lines.contains("1 learned"), "{lines}");
+        assert!(lines.contains("1 peer prefix(es) learned"), "{lines}");
+    }
+
+    #[test]
+    fn a_route_to_this_node_is_not_reported_as_a_peer() {
+        let endpoint = "295ca41d4e6e4b0f8d5b1c2f9a7e3d6c8b4a2f1e0d9c7b6a5f4e3d2c1b0a9f8e";
+        let value = serde_json::json!({
+            "enabled": true,
+            "running": true,
+            "publishing": true,
+            "tun": "mycelium0",
+            "mtu": 1280,
+            "endpoint_id": endpoint,
+            "overlay": ["fd7a:115c:a1f0:0:5aab:28ee:ebe3:a67f/128"],
+            "routes": [{"prefix": "fd7a:115c:a1f0:0:5aab:28ee:ebe3:a67f/128", "peer": endpoint}],
+            "peer_routes": 0,
+            "self_routes": 1,
+            "refresh_failures": 0,
+            "status_age_secs": 7,
+        });
+        let lines = render(&value).join("\n");
+        assert!(lines.contains("0 peer prefix(es) learned"), "{lines}");
+        assert!(lines.contains("point at this node's own endpoint"), "{lines}");
     }
 
     #[test]

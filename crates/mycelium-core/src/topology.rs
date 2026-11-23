@@ -486,6 +486,22 @@ pub struct Topology {
     pub updated_from: Vec<Origin>,
 }
 
+/// Provenance is a moving window, not a log.
+///
+/// Every observation appends an origin, and the whole list travels inside every
+/// gossip snapshot, so an unbounded list grows with the fleet's uptime rather
+/// than with its size. Past a point the snapshot exceeds the observation size
+/// limit, peers drop it, and topology stops merging with no error on either
+/// side. The newest origins are the ones that explain recent state.
+pub const MAX_UPDATED_FROM: usize = 1024;
+
+fn trim_origins(origins: &mut Vec<Origin>) {
+    if origins.len() > MAX_UPDATED_FROM {
+        let excess = origins.len() - MAX_UPDATED_FROM;
+        origins.drain(..excess);
+    }
+}
+
 fn origin_key(o: &Origin) -> String {
     match &o.site {
         Some(site) => format!("{site}/{}:{}", o.device, o.source),
@@ -603,6 +619,7 @@ impl Topology {
                 self.updated_from.push(origin);
             }
         }
+        trim_origins(&mut self.updated_from);
     }
 
     pub fn observe_all(&mut self, obs: impl IntoIterator<Item = Observation>) -> TopologyReport {
@@ -1164,6 +1181,7 @@ impl Topology {
             }
         }
         self.updated_from.push(obs_origin);
+        trim_origins(&mut self.updated_from);
     }
 
     fn device_node(
@@ -1345,6 +1363,45 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn provenance_stays_a_moving_window() {
+        let mut topo = Topology::empty();
+        // One origin per observation, as a long-lived daemon produces: this is
+        // what made the gossiped snapshot outgrow the observation size limit.
+        for n in 0..(MAX_UPDATED_FROM + 25) {
+            topo.observe_all([Observation::Neighbor {
+                mac: MacAddress::parse("aa:bb:cc:dd:ee:01"),
+                ip: ip("10.0.7.20"),
+                hostname: None,
+                port: None,
+                origin: Origin::new(&format!("device-{n}"), "arp"),
+            }]);
+        }
+        assert_eq!(topo.updated_from.len(), MAX_UPDATED_FROM);
+        // The newest survive, so the list still explains recent state.
+        assert_eq!(
+            topo.updated_from.last().map(|o| o.device.clone()),
+            Some(format!("device-{}", MAX_UPDATED_FROM + 24))
+        );
+        assert!(
+            !topo.updated_from.iter().any(|o| o.device == "device-0"),
+            "the oldest origins are dropped first"
+        );
+    }
+
+    #[test]
+    fn merging_snapshots_never_grows_provenance_without_bound() {
+        let mut topo = Topology::empty();
+        let mut incoming = Topology::empty();
+        for n in 0..(MAX_UPDATED_FROM + 10) {
+            incoming
+                .updated_from
+                .push(Origin::new(&format!("peer-{n}"), "merge"));
+        }
+        topo.merge_snapshot(incoming);
+        assert_eq!(topo.updated_from.len(), MAX_UPDATED_FROM);
     }
 
     #[test]

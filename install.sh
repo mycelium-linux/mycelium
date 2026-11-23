@@ -14,8 +14,10 @@
 #
 # The VPN component installs a root-owned iroh-tun service. The user daemon owns
 # the identity and the published observation; root owns only the tunnel child.
-# A source build is the default because the VPN supervisor and installer changes
-# are not in a signed release yet.
+#
+# Binaries come from the latest published release unless this script is running
+# out of a checkout, where it builds the tree it was run from. --release TAG,
+# --source DIR and --bin-dir DIR decide it explicitly.
 
 set -Eeuo pipefail
 
@@ -2153,6 +2155,13 @@ main() {
         && ! in_checkout; then
         RELEASE_VERSION=latest
         note "no checkout here; installing the latest published release"
+    fi
+    # The other half of that default: a checkout silently means a compiler.
+    # Say so, and name the way out, because a source build is minutes and a
+    # release build is seconds.
+    if [ -z "$RELEASE_VERSION" ] && [ -z "$SRC" ] && [ -z "$BIN_SRC" ] \
+        && in_checkout; then
+        note "building from the checkout at $SCRIPT_DIR (slow); pass --release latest to install published binaries instead"
     fi
     resolve_updates_default
     apply_profile

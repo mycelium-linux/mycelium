@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::io::BufReader as StdBufReader;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7,6 +7,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
@@ -38,7 +40,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_RESET_SESSION: Duration = Duration::from_secs(30);
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_OBSERVATIONS_PER_MESSAGE: usize = 64;
+/// Frames may queue only this long before a peer that is not draining its
+/// socket ends the session. A 900 KiB observation batch is the largest frame
+/// a peer sends on its own, so this is a few batches of slack.
+const OUTBOX_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OBSERVATION_MESSAGE_BYTES: usize = 900 * 1024;
+/// Room for the signature, origin, sequence and JSON keys that wrap a payload.
+const ENVELOPE_BUDGET_BYTES: usize = 4 * 1024;
 
 type AnyError = Box<dyn Error + Send + Sync>;
 
@@ -687,12 +695,24 @@ impl Mesh {
         if self.last_topology_digest.lock().await.as_deref() == Some(digest.as_str()) {
             return Ok(());
         }
-        self.publish(PeerEvent::Topology(TopologySnapshot {
+        let snapshot = TopologySnapshot {
             schema_version: 1,
             digest: digest.clone(),
             topology: value,
-        }))
-        .await?;
+        };
+        // An envelope larger than the ingest cap is dropped by every receiver,
+        // including this daemon, which leaves topology silently unsynced. Fail
+        // here instead: the sender can see the cause, and the caller can trim
+        // whatever grew (see `Topology::MAX_UPDATED_FROM`).
+        let bytes = serde_json::to_vec(&snapshot)?.len();
+        if bytes + ENVELOPE_BUDGET_BYTES > MAX_OBSERVATION_MESSAGE_BYTES {
+            return Err(format!(
+                "topology snapshot is {bytes} bytes, more than the {} byte observation limit; peers would drop it",
+                MAX_OBSERVATION_MESSAGE_BYTES - ENVELOPE_BUDGET_BYTES
+            )
+            .into());
+        }
+        self.publish(PeerEvent::Topology(snapshot)).await?;
         *self.last_topology_digest.lock().await = Some(digest);
         Ok(())
     }
@@ -1444,7 +1464,8 @@ impl Mesh {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let (reader, mut writer) = tokio::io::split(stream);
-        send(&mut writer, &PeerMessage::Hello(self.local_hello().await)).await?;
+        let mut outbox = Outbox::default();
+        outbox.push(&PeerMessage::Hello(self.local_hello().await))?;
         let mut reader = BufReader::new(reader);
         let mut pending_line = Vec::new();
         let mut digest_interval = tokio::time::interval(DIGEST_INTERVAL);
@@ -1466,6 +1487,7 @@ impl Mesh {
         let mut read_deadline = tokio::time::Instant::now() + PEER_IDLE_TIMEOUT;
         loop {
             tokio::select! {
+                result = outbox.drain(&mut writer), if !outbox.is_empty() => result?,
                 _ = tokio::time::sleep_until(read_deadline) => {
                     return Err("peer sync read timed out".into());
                 }
@@ -1532,11 +1554,7 @@ impl Mesh {
                                 })
                                 .await??;
                                 for chunk in batches {
-                                    send(
-                                        &mut writer,
-                                        &PeerMessage::Observations(chunk),
-                                    )
-                                    .await?;
+                                    outbox.push(&PeerMessage::Observations(chunk))?;
                                 }
                             }
                         }
@@ -1548,7 +1566,7 @@ impl Mesh {
                                 continue;
                             }
                             if let Some(chunk) = artifact_chunk(&digest, offset, length)? {
-                                send(&mut writer, &chunk).await?;
+                                outbox.push(&chunk)?;
                             }
                         }
                         PeerMessage::ArtifactChunk { digest, offset, data, complete } => {
@@ -1565,7 +1583,7 @@ impl Mesh {
                             )?;
                             if !complete {
                                 if let Some(request) = self.next_artifact_request().await? {
-                                    send(&mut writer, &request).await?;
+                                    outbox.push(&request)?;
                                 }
                             }
                         }
@@ -1574,7 +1592,7 @@ impl Mesh {
                                 continue;
                             }
                             if let Some(response) = crate::ssh_renewal::issue(&request, now(), &self.access_view(now()).await) {
-                                send(&mut writer, &PeerMessage::SshRenewalResponse(response)).await?;
+                                outbox.push(&PeerMessage::SshRenewalResponse(response))?;
                             }
                         }
                         // New clients use retained gossip deliveries; keep the
@@ -1606,12 +1624,12 @@ impl Mesh {
                         .iter()
                         .map(|(key, envelope)| (key.clone(), envelope.sequence))
                         .collect();
-                    send(&mut writer, &PeerMessage::Digest(digest)).await?;
+                    outbox.push(&PeerMessage::Digest(digest))?;
                 }
                 _ = artifact_interval.tick() => {
                     if !binding_required || transport_authenticated {
                         if let Some(request) = self.next_artifact_request().await? {
-                            send(&mut writer, &request).await?;
+                            outbox.push(&request)?;
                         }
                     }
                 }
@@ -3569,5 +3587,255 @@ mod tests {
             "sshd 1 root 3u IPv4 x TCP 10.0.0.2:22->10.0.0.3:50000 (ESTABLISHED)",
             22
         ));
+    }
+}
+
+// Outbox: frames queued here are drained inside the session's select! loop
+// instead of writing directly to the socket. This prevents the deadlock where
+// both peers have large batches and each blocks on write_timeout because
+// neither is reading. Small hellos are unaffected, which is why peers appear
+// in `mycelium peers` and sync still looks alive.
+#[derive(Default)]
+struct Outbox {
+    frames: VecDeque<Vec<u8>>,
+    offset: usize,
+    queued: usize,
+    needs_flush: bool,
+}
+
+impl Outbox {
+    fn is_empty(&self) -> bool {
+        self.frames.is_empty() && !self.needs_flush
+    }
+
+    fn push(&mut self, message: &PeerMessage) -> Result<(), AnyError> {
+        let mut frame = serde_json::to_vec(message)?;
+        frame.push(b'\n');
+        self.queued += frame.len();
+        if self.queued > OUTBOX_LIMIT_BYTES {
+            return Err(format!("peer is not draining writes: {} bytes queued", self.queued).into());
+        }
+        self.frames.push_back(frame);
+        self.needs_flush = true;
+        Ok(())
+    }
+
+    /// Cancellation-safe: only bytes the socket acknowledged are dropped,
+    /// so a `select!` tick that interrupts a frame resumes at the same offset
+    /// and never rewrites or reorders it.
+    async fn drain<W: tokio::io::AsyncWrite + Unpin>(&mut self, writer: &mut W) -> Result<(), AnyError> {
+        std::future::poll_fn(|cx| loop {
+            let Some(frame_len) = self.frames.front().map(Vec::len) else {
+                if !self.needs_flush {
+                    return Poll::Ready(Ok(()));
+                }
+                return match Pin::new(&mut *writer).poll_flush(cx) {
+                    Poll::Ready(Ok(())) => {
+                        self.needs_flush = false;
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                    Poll::Pending => Poll::Pending,
+                };
+            };
+            if self.offset >= frame_len {
+                self.frames.pop_front();
+                self.offset = 0;
+                continue;
+            }
+            let written = {
+                let frame = self.frames.front().expect("checked above");
+                Pin::new(&mut *writer).poll_write(cx, &frame[self.offset..])
+            };
+            match written {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::WriteZero)))
+                }
+                Poll::Ready(Ok(count)) => {
+                    self.offset += count;
+                    self.queued = self.queued.saturating_sub(count);
+                    if self.offset >= frame_len {
+                        self.frames.pop_front();
+                        self.offset = 0;
+                    }
+                    continue;
+                }
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }).await
+        .map_err(|error| -> AnyError { format!("peer sync write failed: {error}").into() })
+    }
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+    use std::future::Future;
+
+    /// Accepts one byte per `poll_write`, so every frame takes many polls. That
+    /// is the shape a `select!` tick sees when it interrupts a frame in flight.
+    #[derive(Default)]
+    struct Trickle {
+        bytes: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncWrite for Trickle {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            match buf.first() {
+                Some(byte) => {
+                    this.bytes.push(*byte);
+                    Poll::Ready(Ok(1))
+                }
+                None => Poll::Ready(Ok(0)),
+            }
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Accepts one byte per poll too, but reports `Pending` first, which is how
+    /// a socket behaves when its send buffer is full.
+    #[derive(Default)]
+    struct Stalling {
+        bytes: Vec<u8>,
+        stalls: usize,
+    }
+
+    impl tokio::io::AsyncWrite for Stalling {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            if this.stalls > 0 {
+                this.stalls -= 1;
+                return Poll::Pending;
+            }
+            match buf.first() {
+                Some(byte) => {
+                    this.bytes.push(*byte);
+                    Poll::Ready(Ok(1))
+                }
+                None => Poll::Ready(Ok(0)),
+            }
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn digest(sequence: u64) -> PeerMessage {
+        PeerMessage::Digest(BTreeMap::from([("origin".to_string(), sequence)]))
+    }
+
+    fn decode(bytes: &[u8]) -> Vec<PeerMessage> {
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|frame| !frame.is_empty())
+            .map(|frame| serde_json::from_slice(frame).expect("every frame is one message"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn frames_are_written_in_order_exactly_once() {
+        let mut outbox = Outbox::default();
+        let sent: Vec<PeerMessage> = (0..3).map(digest).collect();
+        for message in &sent {
+            outbox.push(message).expect("under the limit");
+        }
+
+        let mut writer = Trickle::default();
+        outbox.drain(&mut writer).await.expect("a trickling socket still drains");
+
+        assert_eq!(decode(&writer.bytes), sent);
+        assert!(outbox.is_empty(), "nothing should be left queued");
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_drain_resumes_at_its_offset() {
+        let mut outbox = Outbox::default();
+        let sent: Vec<PeerMessage> = (0..2).map(digest).collect();
+        for message in &sent {
+            outbox.push(message).expect("under the limit");
+        }
+
+        let mut writer = Stalling { stalls: 3, ..Default::default() };
+        // Poll by hand: each `Pending` is a `select!` tick that abandoned the
+        // frame mid-flight. Re-polling must resume, not rewrite or reorder.
+        let mut drain = Box::pin(outbox.drain(&mut writer));
+        loop {
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match drain.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => {
+                    result.expect("draining eventually finishes");
+                    break;
+                }
+                Poll::Pending => continue,
+            }
+        }
+        drop(drain);
+
+        assert_eq!(writer.bytes.len(), sent.iter().map(|m| {
+            serde_json::to_vec(m).unwrap().len() + 1
+        }).sum::<usize>(), "no byte was written twice");
+        assert_eq!(decode(&writer.bytes), sent);
+        assert!(outbox.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_draining_ends_the_session() {
+        let mut outbox = Outbox::default();
+        // A padded frame keeps each push small while still crossing the limit
+        // in a bounded number of steps, without one huge allocation.
+        let padding = "x".repeat(64 * 1024);
+        let message = PeerMessage::Digest(BTreeMap::from([(padding, 1)]));
+
+        let mut error = None;
+        for _ in 0..(OUTBOX_LIMIT_BYTES / (64 * 1024) + 2) {
+            if let Err(refused) = outbox.push(&message) {
+                error = Some(refused.to_string());
+                break;
+            }
+        }
+        let error = error.expect("queued frames must eventually be refused");
+
+        assert!(error.contains("peer is not draining writes"), "{error}");
+        // The reported total is the point past the limit, not the limit itself.
+        let queued: usize = error
+            .split(|character: char| !character.is_ascii_digit())
+            .filter(|token| !token.is_empty())
+            .find_map(|token| token.parse().ok())
+            .unwrap_or_else(|| panic!("no byte count in {error}"));
+        assert!(queued > OUTBOX_LIMIT_BYTES, "{queued} should exceed {OUTBOX_LIMIT_BYTES}");
     }
 }
