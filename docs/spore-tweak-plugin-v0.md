@@ -193,6 +193,10 @@ preview CID
 
 ## Security
 
+Install consent is defined in
+[`spore-consent-v0.md`](spore-consent-v0.md): manifests request, operators approve,
+Loam enforces, and Tweaks cannot widen.
+
 ```text
 Tweak edits behavior inside existing grants
 Tweak cannot add WIT imports
