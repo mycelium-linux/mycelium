@@ -3667,3 +3667,175 @@ impl Outbox {
         .map_err(|error| -> AnyError { format!("peer sync write failed: {error}").into() })
     }
 }
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+    use std::future::Future;
+
+    /// Accepts one byte per `poll_write`, so every frame takes many polls. That
+    /// is the shape a `select!` tick sees when it interrupts a frame in flight.
+    #[derive(Default)]
+    struct Trickle {
+        bytes: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncWrite for Trickle {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            match buf.first() {
+                Some(byte) => {
+                    this.bytes.push(*byte);
+                    Poll::Ready(Ok(1))
+                }
+                None => Poll::Ready(Ok(0)),
+            }
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Accepts one byte per poll too, but reports `Pending` first, which is how
+    /// a socket behaves when its send buffer is full.
+    #[derive(Default)]
+    struct Stalling {
+        bytes: Vec<u8>,
+        stalls: usize,
+    }
+
+    impl tokio::io::AsyncWrite for Stalling {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            if this.stalls > 0 {
+                this.stalls -= 1;
+                return Poll::Pending;
+            }
+            match buf.first() {
+                Some(byte) => {
+                    this.bytes.push(*byte);
+                    Poll::Ready(Ok(1))
+                }
+                None => Poll::Ready(Ok(0)),
+            }
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn digest(sequence: u64) -> PeerMessage {
+        PeerMessage::Digest(BTreeMap::from([("origin".to_string(), sequence)]))
+    }
+
+    fn decode(bytes: &[u8]) -> Vec<PeerMessage> {
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|frame| !frame.is_empty())
+            .map(|frame| serde_json::from_slice(frame).expect("every frame is one message"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn frames_are_written_in_order_exactly_once() {
+        let mut outbox = Outbox::default();
+        let sent: Vec<PeerMessage> = (0..3).map(digest).collect();
+        for message in &sent {
+            outbox.push(message).expect("under the limit");
+        }
+
+        let mut writer = Trickle::default();
+        outbox.drain(&mut writer).await.expect("a trickling socket still drains");
+
+        assert_eq!(decode(&writer.bytes), sent);
+        assert!(outbox.is_empty(), "nothing should be left queued");
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_drain_resumes_at_its_offset() {
+        let mut outbox = Outbox::default();
+        let sent: Vec<PeerMessage> = (0..2).map(digest).collect();
+        for message in &sent {
+            outbox.push(message).expect("under the limit");
+        }
+
+        let mut writer = Stalling { stalls: 3, ..Default::default() };
+        // Poll by hand: each `Pending` is a `select!` tick that abandoned the
+        // frame mid-flight. Re-polling must resume, not rewrite or reorder.
+        let mut drain = Box::pin(outbox.drain(&mut writer));
+        loop {
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match drain.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => {
+                    result.expect("draining eventually finishes");
+                    break;
+                }
+                Poll::Pending => continue,
+            }
+        }
+        drop(drain);
+
+        assert_eq!(writer.bytes.len(), sent.iter().map(|m| {
+            serde_json::to_vec(m).unwrap().len() + 1
+        }).sum::<usize>(), "no byte was written twice");
+        assert_eq!(decode(&writer.bytes), sent);
+        assert!(outbox.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_draining_ends_the_session() {
+        let mut outbox = Outbox::default();
+        // A padded frame keeps each push small while still crossing the limit
+        // in a bounded number of steps, without one huge allocation.
+        let padding = "x".repeat(64 * 1024);
+        let message = PeerMessage::Digest(BTreeMap::from([(padding, 1)]));
+
+        let mut error = None;
+        for _ in 0..(OUTBOX_LIMIT_BYTES / (64 * 1024) + 2) {
+            if let Err(refused) = outbox.push(&message) {
+                error = Some(refused.to_string());
+                break;
+            }
+        }
+        let error = error.expect("queued frames must eventually be refused");
+
+        assert!(error.contains("peer is not draining writes"), "{error}");
+        // The reported total is the point past the limit, not the limit itself.
+        let queued: usize = error
+            .split(|character: char| !character.is_ascii_digit())
+            .filter(|token| !token.is_empty())
+            .find_map(|token| token.parse().ok())
+            .unwrap_or_else(|| panic!("no byte count in {error}"));
+        assert!(queued > OUTBOX_LIMIT_BYTES, "{queued} should exceed {OUTBOX_LIMIT_BYTES}");
+    }
+}
