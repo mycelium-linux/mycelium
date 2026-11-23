@@ -248,6 +248,32 @@ async exports
 | Surf plugin | WIT, adapter, sidecar, package, install tested | provider works; no image consumer/profile yet |
 | Bob plugin | WIT and Soil bindings | adapter/package and Soil port not built |
 | Theseus/LSP | separate agent/editor surfaces | no image profile/plugin integration |
+| Deadwax Spore | Soil source controller and SSR routes exist in deadwax PR #1 | host lacks `soil:streams` HTTP accept and `soil:http` allowlist/credential wiring |
+| Radioman Pi | no image Spore yet | needs host grants and provider boundary without process/socket/path exposure |
+
+## First real image Spore: Deadwax
+
+`ajmwagar/deadwax` PR #1 is the first practical image Spore controller.
+
+Required host links:
+
+```text
+soil:streams with protocol = "http"
+soil:http allowlisting http://127.0.0.1:6601 and https://api.spotify.com
+soil:creds handle "spotify"
+```
+
+Boundary:
+
+```text
+deadwax serve owns local library/MPD
+Spotify Web API is host-owned HTTP
+the Spore never sees a token, socket, path, PCM, or process
+librespot remains a separate plugin capability
+```
+
+This exposes the immediate host gap: `loam doctor` currently lists `soil:creds`
+but not `soil:http` or `soil:streams`.
 
 ## Immediate next steps
 
