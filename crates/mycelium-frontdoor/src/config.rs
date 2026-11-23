@@ -150,7 +150,10 @@ impl FrontdoorConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.routes.is_empty() {
+        // Discovery can be the only source of routes. A static route still
+        // validates below; an empty table is valid only when a catalog exists
+        // to derive names from.
+        if self.routes.is_empty() && self.mycelium_bin.is_none() {
             return Err(ConfigError::Validation("no routes configured".into()));
         }
         if !(5..=3600).contains(&self.service_refresh_secs) {
@@ -334,6 +337,19 @@ mod tests {
             }"#,
         );
         assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn discovery_can_be_the_only_route_source() {
+        let discovery_only = config(
+            r#"{
+                "mycelium_bin": "/Users/example/.local/bin/mycelium",
+                "routes": []
+            }"#,
+        );
+        assert!(discovery_only.validate().is_ok());
+        let static_only = config(r#"{"routes": []}"#);
+        assert!(static_only.validate().is_err());
     }
 
     #[test]
