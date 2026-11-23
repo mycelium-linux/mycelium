@@ -119,19 +119,14 @@ pub async fn run_with_options(
     )));
     let services = Arc::new(std::sync::RwLock::new(ServiceIndex::default()));
     let services_for_reload = services.clone();
+    // Discovery is not gated on a configured `service_kind` route. A route
+    // file may be entirely static; the catalog still owns every name no
+    // configured route claims, which is what lets a newly installed Spore
+    // appear without a hand-edited route.
     let discovery = config
-        .routes
-        .iter()
-        .any(|route| route.service_kind.is_some())
-        .then(|| {
-            (
-                config
-                    .mycelium_bin
-                    .clone()
-                    .expect("validated: service_kind requires mycelium_bin"),
-                config.service_refresh_secs,
-            )
-        });
+        .mycelium_bin
+        .clone()
+        .map(|bin| (bin, config.service_refresh_secs));
 
     if let Some((bin, refresh_secs)) = discovery.clone() {
         match ServiceIndex::load(&bin).await {

@@ -102,8 +102,23 @@ pub(super) fn project(
     let mut identities = BTreeSet::new();
     let mut entrances = BTreeMap::new();
     for service in &catalog.observations {
-        let Some(label) = aliases.get(&service.value.kind) else {
-            continue;
+        // An alias overrides the owner's label, but no alias is not "no name":
+        // the lease already carries the labels the zone composed. Requiring an
+        // alias here meant a correct `x.myc` lease produced no DNS record at all.
+        let label = match aliases.get(&service.value.kind) {
+            Some(label) => label.clone(),
+            None => {
+                let suffix = format!(".{}", settings.resolver.suffix);
+                match service
+                    .value
+                    .names
+                    .iter()
+                    .find_map(|name| name.strip_suffix(&suffix))
+                {
+                    Some(label) => label.to_owned(),
+                    None => continue,
+                }
+            }
         };
         if service.schema_version != SCHEMA_VERSION
             || !service.is_fresh_at(now)
@@ -325,6 +340,24 @@ mod tests {
         }];
         project(&s, hosts, c, 1000, 1200)
     }
+    #[test]
+    fn a_lease_label_projects_without_an_alias() {
+        let mut c = catalog();
+        c.observations[0].value.names = vec!["x.myc".into()];
+        let mut s = crate::tests::settings();
+        s.service_index_peers
+            .insert("unibus-viewer".into(), "neo".into());
+        let hosts = vec![DnsRecord {
+            name: "neo.lab.myc".into(),
+            address: "192.0.2.12".parse().unwrap(),
+            site: "lab".into(),
+            node: "neo".into(),
+        }];
+        let (records, _) = project(&s, hosts, &c, 1000, 1200).unwrap();
+        assert!(records.iter().any(|r| r.name == "x.neo.lab.myc"));
+        assert!(records.iter().any(|r| r.name == "x.myc"));
+    }
+
     #[test]
     fn exact_owner_endpoint_and_expiry() {
         let (records, expiry) = run(&catalog()).unwrap();

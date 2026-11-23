@@ -154,11 +154,20 @@ pub fn project_service_names(
                 continue;
             }
             for endpoint in &claim.endpoints {
-                let Some(address) = entrance_address(endpoint) else {
+                // A literal HTTPS endpoint names its own address. An HTTP or
+                // loopback hint cannot become a DNS answer by itself, so it
+                // projects onto the observer's host records instead. The
+                // gateway owns the port; DNS owns only the host.
+                let literal = entrance_address(endpoint);
+                let http_hint = endpoint.starts_with("http://") || endpoint.starts_with("https://");
+                if literal.is_none() && !http_hint {
                     continue;
-                };
+                }
                 for (index, host) in hosts.iter().enumerate() {
-                    if host.node != claim.node || host.address != address {
+                    if host.node != claim.node {
+                        continue;
+                    }
+                    if literal.is_some_and(|address| host.address != address) {
                         continue;
                     }
                     let projected = ServiceName {
@@ -166,7 +175,7 @@ pub fn project_service_names(
                         kind: claim.kind.clone(),
                         node: claim.node.clone(),
                         endpoint: endpoint.clone(),
-                        address,
+                        address: host.address,
                         expires_at: claim.expires_at,
                         host: index,
                     };
@@ -308,6 +317,20 @@ mod tests {
         assert_eq!(names.len(), 1);
         assert_eq!(names[0].name, "store.studio.wagar-house.myc");
         assert_eq!(names[0].kind, "store");
+        assert_eq!(names[0].address, "100.108.9.93".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn an_http_loopback_lease_projects_onto_its_observers_hosts() {
+        let mut catalog = lease(&["x.myc"], "n1", "n1");
+        catalog.observations[0].value.endpoints = ["http://127.0.0.1:8799"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let names =
+            project_service_names(&BTreeMap::new(), "myc", &hosts(), &catalog, 100).unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].name, "x.studio.wagar-house.myc");
         assert_eq!(names[0].address, "100.108.9.93".parse::<IpAddr>().unwrap());
     }
 
