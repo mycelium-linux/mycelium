@@ -508,13 +508,25 @@ async fn proxy(State(state): State<FrontdoorState>, request: Request<Body>) -> R
     if state.dashboard_hosts.read().unwrap().contains(&host) {
         return crate::dashboard::handle(&state, request).await;
     }
-    let Some(route) = state.table.read().unwrap().select(&host) else {
-        return error_page(
-            StatusCode::NOT_FOUND,
-            &host,
-            "No app is registered at this name.",
-            state.forwarded_proto,
-        );
+    let route = {
+        let table = state.table.read().unwrap();
+        if host.ends_with(".myc") && !table.covers(&host) {
+            return error_page(
+                StatusCode::NOT_FOUND,
+                &host,
+                "No app is registered at this name.",
+                state.forwarded_proto,
+            );
+        }
+        let Some(route) = table.select(&host) else {
+            return error_page(
+                StatusCode::NOT_FOUND,
+                &host,
+                "No app is registered at this name.",
+                state.forwarded_proto,
+            );
+        };
+        route
     };
     let targets = targets_for(&route, &state.services.read().unwrap());
     if targets.is_empty() {
