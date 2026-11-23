@@ -201,6 +201,33 @@ Tweak can be rejected by target/digest/ACL policy
 Production can set image eval=false
 ```
 
+## Landed
+
+Loam PR #195 (merge `62e5a59`) makes function-only and native-sidecar plugin
+installation real:
+
+```text
+loam plugin verify PATH
+loam plugin list --json
+loam plugin inspect ID-OR-INTERFACE
+lock/signature/sidecar/executable verification
+unsigned dev installs recorded in install state
+duplicate-provider rejection
+function-provider composition at install time
+sidecar-backed adapters linked at runtime
+bounded loam:plugin/ipc with payload canonical, params/result compatible
+malformed/oversized/EOF/missing-sidecar failures
+rollback and drift reporting
+consumer -> adapter -> loam:plugin/ipc -> sidecar e2e proof
+```
+
+Still out of scope in Loam:
+
+```text
+resource exports
+async exports
+```
+
 ## Gap analysis
 
 | Area | Current state | Gap |
@@ -210,7 +237,7 @@ Production can set image eval=false
 | Soil image persistence | `tools/image` tracks loaded sources and can flush sources | no image snapshot, no image delta log, no restore generation |
 | Soil WIT imports | generated bindings and `host-call` exist | an image host world with `ajmwagar:surf`/`fpl:bob` imports and profile composition is missing |
 | Loam image mode | no image mode; current Spore packages use `module.wasm` | add image package kind, runtime lifecycle, image profile composition |
-| Loam plugin composition | `loam plugin list/verify/pack/compose` works; Surf provider installs | installed `loam install` dropped `signatures/`; plugin registry refused the package until the dev seal was copied manually |
+| Loam plugin composition | function-only and native-sidecar plugins install, verify, inspect, compose, roll back, and hot-link; PR #195 merged | resource exports and async exports remain out of scope |
 | Loam static imports | plugin provider links only into consumers importing the interface | image REPL/image host needs a profile-driven WIT import set |
 | Mycelium spore spec | this document | needs executable package schema and migration from component-only Spore packages |
 | Mycelium tweak spec | this document | needs tweak package reader, target validation, apply/revert call into Soil |
