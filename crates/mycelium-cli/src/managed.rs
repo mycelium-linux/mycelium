@@ -149,6 +149,45 @@ fn decode<const N: usize>(hex_value: &str) -> Result<[u8; N], String> {
         .map_err(|_| format!("expected {N} bytes, got {}", bytes.len()))
 }
 
+/// Sign one entry and, when asked, write the signed manifest back.
+///
+/// The catalogue a host runs must be signed by a key it already trusts, so
+/// publishing a catalogue is a signing step rather than an editing step. The
+/// manifest carries its own signer public key, so a host only needs the set of
+/// keys it trusts; it never needs the store's account.
+pub fn sign_entry(
+    entry: &Entry,
+    key: &SigningKey,
+    write: bool,
+) -> Result<(String, String, PathBuf), String> {
+    let signed = entry.manifest.clone().sign(key)?;
+    let path = entry.dir.join("manifest.json");
+    if write {
+        let body = serde_json::to_vec_pretty(&signed).map_err(|error| error.to_string())?;
+        std::fs::write(&path, body).map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    Ok((signed.signer, signed.signature, path))
+}
+
+/// Every entry with its signature state, for a gate before publishing a store.
+pub fn verify_catalogue(entries: &[Entry], trusted: &[String]) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .map(|entry| {
+            let signature = entry.manifest.verify();
+            serde_json::json!({
+                "id": entry.manifest.id,
+                "version": entry.manifest.version,
+                "signer": entry.manifest.signer,
+                "signed": !entry.manifest.signature.is_empty(),
+                "verified": signature.is_ok(),
+                "error": signature.err(),
+                "trusted": entry.manifest.trusted_by(trusted),
+            })
+        })
+        .collect()
+}
+
 /// Read every `manifest.json` under `catalogue`. A broken manifest is reported
 /// and skipped: one bad entry must not hide the rest of the store from `list`.
 pub fn load_catalogue(catalogue: &Path) -> Result<(Vec<Entry>, Vec<String>), String> {
@@ -775,6 +814,62 @@ mod tests {
         let root = state();
         let error = rollback(&root, "cloudflared-tunnel", false, true).unwrap_err();
         assert!(error.contains("no install receipt"), "{error}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn signing_an_entry_makes_it_installable() {
+        // The catalogue shipped unsigned, and `run_step` refuses an unsigned
+        // manifest. Signing is the step that turns a reviewed entry into one a
+        // host will run, so it has to round-trip through disk.
+        let root = state();
+        let dir = root.join("catalogue").join("palisade-edge");
+        let mut entry = entry_at(&dir, "1.0.0");
+        // What the catalogue actually ships today: reviewed, but unsigned.
+        entry.manifest.signer.clear();
+        entry.manifest.signature.clear();
+        assert!(run_step_in(&entry, Action::Install, false, true, &root, false).is_err());
+
+        let key = SigningKey::generate(&mut rand_core::OsRng);
+        let (signer, signature, path) = sign_entry(&entry, &key, true).unwrap();
+        assert!(signature.len() == 128, "{signature}");
+        let written: Manifest = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        written.verify().unwrap();
+        assert_eq!(written.signer, signer);
+        assert!(written.trusted_by(&[signer.clone()]));
+
+        let reloaded = Entry {
+            manifest: written,
+            dir: dir.clone(),
+        };
+        run_step_in(&reloaded, Action::Install, false, true, &root, false).unwrap();
+        assert_eq!(
+            read_receipt(&root, "cloudflared-tunnel").unwrap().version,
+            "1.0.0"
+        );
+
+        let rows = verify_catalogue(&[reloaded], &[signer]);
+        assert_eq!(rows[0]["verified"], serde_json::json!(true));
+        assert_eq!(rows[0]["trusted"], serde_json::json!(true));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_untrusted_signer_verifies_but_is_not_trusted() {
+        let root = state();
+        let dir = root.join("catalogue").join("palisade-edge");
+        let entry = entry_at(&dir, "1.0.0");
+        let key = SigningKey::generate(&mut rand_core::OsRng);
+        sign_entry(&entry, &key, true).unwrap();
+        let signed: Manifest =
+            serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+        let entry = Entry {
+            manifest: signed,
+            dir,
+        };
+        let rows = verify_catalogue(&[entry], &["00".repeat(32)]);
+        assert_eq!(rows[0]["verified"], serde_json::json!(true));
+        assert_eq!(rows[0]["trusted"], serde_json::json!(false));
         std::fs::remove_dir_all(&root).ok();
     }
 }

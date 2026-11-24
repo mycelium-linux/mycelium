@@ -1717,9 +1717,102 @@ fn managed_command(args: &[String]) -> Result<Vec<String>, ClientError> {
         }
         return Ok(lines);
     }
+    if action == "sign" || action == "verify" {
+        if action == "verify" {
+            let rows = managed::verify_catalogue(&entries, &trusted);
+            if flags.json {
+                return Ok(vec![
+                    serde_json::to_string(&rows).map_err(|error| err_usage(&error.to_string()))?
+                ]);
+            }
+            let mut lines = vec![format!("managed catalogue {}", catalogue.display())];
+            for row in &rows {
+                let state = match (row["verified"].as_bool(), row["trusted"].as_bool()) {
+                    (Some(true), Some(true)) => "trusted".to_string(),
+                    (Some(true), Some(false)) => "signed, untrusted signer".to_string(),
+                    _ => format!("INVALID: {}", row["error"].as_str().unwrap_or("unsigned")),
+                };
+                lines.push(format!(
+                    "  {:<28} {:<8} {state}",
+                    row["id"].as_str().unwrap_or("?"),
+                    row["version"].as_str().unwrap_or("?")
+                ));
+            }
+            let bad = rows
+                .iter()
+                .filter(|row| {
+                    row["verified"].as_bool() != Some(true)
+                        || row["trusted"].as_bool() != Some(true)
+                })
+                .count();
+            if bad > 0 {
+                return Err(err_usage(&format!(
+                    "{bad} managed entries are not signed by a trusted key"
+                )));
+            }
+            return Ok(lines);
+        }
+        let Some(id) = flags.rest.get(1) else {
+            return Err(err_usage("managed sign needs an id, or --all"));
+        };
+        let signing_key = flags
+            .signing_key
+            .as_deref()
+            .ok_or(err_usage("managed sign needs --signing-key"))?;
+        let key_bytes = std::fs::read(expand_home(signing_key)).map_err(ClientError::Io)?;
+        let key_bytes: [u8; 32] = key_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| err_usage("a managed signing key is exactly 32 bytes"))?;
+        let key = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
+        let targets: Vec<&managed::Entry> = if id == "--all" {
+            entries.iter().collect()
+        } else {
+            vec![entries
+                .iter()
+                .find(|entry| &entry.manifest.id == id)
+                .ok_or_else(|| {
+                    err_usage(&format!(
+                        "no managed install `{id}` in {}",
+                        catalogue.display()
+                    ))
+                })?]
+        };
+        let mut lines = Vec::new();
+        for entry in targets {
+            let (signer, signature, path) =
+                managed::sign_entry(entry, &key, flags.write).map_err(|error| err_usage(&error))?;
+            if flags.json {
+                lines.push(
+                    serde_json::to_string(&serde_json::json!({
+                        "id": entry.manifest.id,
+                        "version": entry.manifest.version,
+                        "signer": signer,
+                        "signature": signature,
+                        "path": path,
+                        "written": flags.write,
+                    }))
+                    .map_err(|error| err_usage(&error.to_string()))?,
+                );
+            } else {
+                lines.push(format!(
+                    "{} {} signed by {}{}",
+                    entry.manifest.id,
+                    entry.manifest.version,
+                    signer,
+                    if flags.write {
+                        format!(" (written to {})", path.display())
+                    } else {
+                        "; pass --write to update the manifest".into()
+                    }
+                ));
+            }
+        }
+        return Ok(lines);
+    }
     let Some(id) = flags.rest.get(1) else {
         return Err(err_usage(
-            "managed needs an id: list|show|plan|apply|uninstall|rollback|status ID",
+            "managed needs an id: list|show|plan|apply|uninstall|rollback|status|sign ID",
         ));
     };
     if action == "status" {
