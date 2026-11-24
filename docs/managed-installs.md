@@ -10,6 +10,17 @@ The store distributes the catalogue. The trust is the same as for releases: a
 host runs only manifests signed by a key it already trusts, unless the operator
 names another key for a local catalogue.
 
+Signing is a command, not a manual edit:
+
+```sh
+mycelium managed sign --all --signing-key ~/.mycelium/release-signing.key --write
+mycelium managed verify --trusted-key "$(cat release-signing.pub)"
+```
+
+The key file is 32 raw bytes, the same format `mycelium releases keygen`
+produces. `verify` exits non-zero when any entry is unsigned, invalid, or signed
+by a key this host does not trust, so it can gate a publish or a test.
+
 ## What one looks like
 
 A catalogue entry is a directory:
