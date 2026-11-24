@@ -1476,6 +1476,9 @@ async fn releases(args: &[String]) -> Result<Vec<String>, ClientError> {
     if action == "verify" {
         return release_verify(&flags);
     }
+    if action == "trust" {
+        return release_trust(&flags);
+    }
     let request = match action {
         "list" => Request::ReleaseList,
         "keygen" => Request::ReleaseKeygen {
@@ -1591,6 +1594,92 @@ fn release_manifest(flags: &Flags) -> Result<Vec<String>, ClientError> {
     Ok(vec![
         serde_json::to_string(&manifest).map_err(|error| err_usage(&error.to_string()))?
     ])
+}
+
+/// Pin a release signing key into this host's node environment.
+///
+/// `node.env` is the canonical store: systemd reads it as an EnvironmentFile and
+/// `mycelium setup --repair` regenerates the launchd plist from it. Pinning here
+/// therefore reaches both service managers without editing a unit by hand, and
+/// the change is reviewable as one line of text.
+fn release_trust(flags: &Flags) -> Result<Vec<String>, ClientError> {
+    let home = myceliumd::home_dir();
+    let path = home.join("node.env");
+    let key = flags
+        .signing_key
+        .as_deref()
+        .or_else(|| flags.rest.get(1).map(String::as_str))
+        .map(str::trim)
+        .filter(|key| !key.is_empty());
+    let Some(key) = key else {
+        let current = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("MYCELIUM_RELEASE_KEYS=")
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        return Ok(vec![serde_json::json!({
+            "path": path,
+            "trusted_keys": current,
+        })
+        .to_string()]);
+    };
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(err_usage("a release key is 64 hex characters (32 bytes)"));
+    }
+    let env = std::fs::read_to_string(&path).map_err(ClientError::Io)?;
+    let updated = merge_trusted_key(&env, key).map_err(|error| err_usage(&error))?;
+    if !flags.write {
+        return Ok(vec![format!(
+            "plan: pin {key} in {}\npass --write to update node.env, then run `mycelium setup --repair` and restart the daemon",
+            path.display()
+        )]);
+    }
+    if updated != env {
+        std::fs::write(&path, &updated).map_err(ClientError::Io)?;
+    }
+    Ok(vec![format!(
+        "pinned {key} in {}; run `mycelium setup --repair` then restart the daemon",
+        path.display()
+    )])
+}
+
+/// Add one key to `MYCELIUM_RELEASE_KEYS`, preserving every other line and the
+/// existing order. Pinning twice is a no-op: a fleet-wide rollout must be
+/// idempotent or every host ends up with a different, ever-growing list.
+fn merge_trusted_key(env: &str, key: &str) -> Result<String, String> {
+    let mut found = false;
+    let mut out = String::with_capacity(env.len() + key.len() + 1);
+    for line in env.lines() {
+        if let Some(existing) = line.strip_prefix("MYCELIUM_RELEASE_KEYS=") {
+            found = true;
+            let mut keys: Vec<&str> = existing
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect();
+            if keys.iter().any(|value| value.eq_ignore_ascii_case(key)) {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            keys.push(key);
+            out.push_str("MYCELIUM_RELEASE_KEYS=");
+            out.push_str(&keys.join(","));
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !found {
+        out.push_str("MYCELIUM_RELEASE_KEYS=");
+        out.push_str(key);
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// Verify a manifest file (one object or an array) against the keys this host
@@ -6609,5 +6698,33 @@ mod ssh_command_tests {
         assert_eq!(rows[0]["needs_update"], true);
         assert_eq!(rows[1]["verdict"], "unknown");
         assert_eq!(rows[1]["needs_update"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn pinning_a_release_key_preserves_the_rest_of_node_env() {
+        let env = "MYCELIUM_SITE=wagar-house\nMYCELIUM_RELEASE_KEYS=aaa\nMYCELIUM_PEERS=one.myc\n";
+        let key = "b".repeat(64);
+        let updated = merge_trusted_key(env, &key).unwrap();
+        assert!(updated.contains(&format!("MYCELIUM_RELEASE_KEYS=aaa,{key}\n")));
+        assert!(updated.contains("MYCELIUM_SITE=wagar-house"));
+        assert!(updated.contains("MYCELIUM_PEERS=one.myc"));
+    }
+
+    #[test]
+    fn pinning_a_release_key_twice_is_a_no_op() {
+        let key = "c".repeat(64);
+        let env = format!("MYCELIUM_RELEASE_KEYS={key}\n");
+        let updated = merge_trusted_key(&env, &key).unwrap();
+        assert_eq!(updated, env);
+        // Case is not a second key: the same signer pinned in another spelling.
+        let mixed = format!("MYCELIUM_RELEASE_KEYS={}\n", key.to_uppercase());
+        assert_eq!(merge_trusted_key(&mixed, &key).unwrap(), mixed);
+    }
+
+    #[test]
+    fn pinning_a_key_adds_the_variable_when_absent() {
+        let key = "d".repeat(64);
+        let updated = merge_trusted_key("MYCELIUM_SITE=fpl\n", &key).unwrap();
+        assert!(updated.ends_with(&format!("MYCELIUM_RELEASE_KEYS={key}\n")));
     }
 }

@@ -4,21 +4,35 @@
   "version": "1.0.0",
   "channel": "stable",
   "summary": "Public ingress for this node through a Cloudflare named tunnel, forwarded to the loopback ingress.",
-  "platforms": ["aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"],
+  "platforms": [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl"
+  ],
   "requires": {
     "root": true,
     "network": true,
-    "credentials": ["cloudflare.tunnel-token"],
-    "commands": ["cloudflared"]
+    "credentials": [
+      "cloudflare.tunnel-token"
+    ],
+    "commands": [
+      "cloudflared"
+    ]
   },
-  "provides": ["ingress.public", "dns.public-hostname"],
+  "provides": [
+    "ingress.public",
+    "dns.public-hostname"
+  ],
   "steps": {
     "check": "check.sh",
     "install": "install.sh",
     "verify": "verify.sh",
     "uninstall": "uninstall.sh"
   },
-  "docs": { "runbook": "runbook.md" },
-  "signer": "",
-  "signature": ""
+  "docs": {
+    "runbook": "runbook.md",
+    "readme": null
+  },
+  "signer": "14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8",
+  "signature": "ca9797d5a88d6ecc94a354ff6d4ce474be8ee83634c2327689fa3c9a85dbc3beaf155884881e9f3ab0fff49c521c1e8efbf814105764f8936ea977f69888790a"
 }
