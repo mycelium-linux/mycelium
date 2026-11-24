@@ -76,6 +76,8 @@ mirror.
 mycelium managed list [--catalog DIR] [--json]
 mycelium managed plan cloudflared-tunnel [--catalog DIR]
 mycelium managed apply cloudflared-tunnel --allow-root --write
+mycelium managed status cloudflared-tunnel [--json]
+mycelium managed rollback cloudflared-tunnel --allow-root --write
 mycelium managed uninstall cloudflared-tunnel --allow-root --write
 ```
 

@@ -1719,9 +1719,46 @@ fn managed_command(args: &[String]) -> Result<Vec<String>, ClientError> {
     }
     let Some(id) = flags.rest.get(1) else {
         return Err(err_usage(
-            "managed needs an id: list|show|plan|apply|uninstall ID",
+            "managed needs an id: list|show|plan|apply|uninstall|rollback|status ID",
         ));
     };
+    if action == "status" {
+        let root = myceliumd::home_dir().join("managed");
+        let receipt = managed::read_receipt(&root, id);
+        if flags.json {
+            return Ok(vec![serde_json::to_string(&serde_json::json!({
+                "id": id,
+                "receipt": receipt,
+            }))
+            .map_err(|error| err_usage(&error.to_string()))?]);
+        }
+        return Ok(match receipt {
+            Some(receipt) => {
+                let mut lines = vec![format!(
+                    "{} {} installed {} (receipt {})",
+                    receipt.id,
+                    receipt.version,
+                    receipt.installed_at,
+                    managed::receipt_path(&root, id).display()
+                )];
+                if receipt.uninstalled_at.is_some() {
+                    lines.push("  uninstalled".into());
+                }
+                let mut previous = receipt.previous.as_deref();
+                while let Some(earlier) = previous {
+                    lines.push(format!("  previous: {}", earlier.version));
+                    previous = earlier.previous.as_deref();
+                }
+                lines
+            }
+            None => vec![format!("{id} has no install receipt on this host")],
+        });
+    }
+    if action == "rollback" {
+        let root = myceliumd::home_dir().join("managed");
+        return managed::rollback(&root, id, flags.allow_root, flags.write)
+            .map_err(|error| err_usage(&error));
+    }
     let entry = entries
         .iter()
         .find(|entry| &entry.manifest.id == id)
