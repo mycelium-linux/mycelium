@@ -1,0 +1,10 @@
+# Managed-catalogue signing keys this repository's entries are signed by.
+#
+# These are public keys. The private half is never stored in this repository;
+# see docs/key-custody.md for where it lives and how it is rotated.
+#
+#   state  key                                                               custody
+#   legacy 962c5dc8088d78bf4f12057de09513c9415466049455df8156c693af1dd30d78  verify-only; private half not present on any reachable host (2026-11-24)
+#   current 14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8 signing key held at ~/.mycelium/release-signing.key on studio
+962c5dc8088d78bf4f12057de09513c9415466049455df8156c693af1dd30d78
+14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8

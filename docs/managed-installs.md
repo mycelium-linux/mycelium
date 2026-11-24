@@ -18,7 +18,8 @@ mycelium managed verify --trusted-key "$(cat release-signing.pub)"
 ```
 
 The key file is 32 raw bytes, the same format `mycelium releases keygen`
-produces. `verify` exits non-zero when any entry is unsigned, invalid, or signed
+produces, and the keys a host accepts are pinned in `MYCELIUM_RELEASE_KEYS`
+(see `docs/key-custody.md`). `verify` exits non-zero when any entry is unsigned, invalid, or signed
 by a key this host does not trust, so it can gate a publish or a test.
 
 ## What one looks like
