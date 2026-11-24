@@ -251,11 +251,207 @@ pub enum Action {
 /// readable by the person approving it, not compiled into the binary. The
 /// environment tells the script where it is and where its state belongs, so the
 /// same catalogue works from a store, a checkout or a mirror.
+/// What an install left behind, so a later version can be backed out.
+///
+/// The receipt snapshots the scripts that actually ran. A rollback must not
+/// depend on the catalogue still carrying the version that was installed: the
+/// store moves on, and the host has to be able to return to what it was.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Receipt {
+    pub id: String,
+    pub version: String,
+    pub signer: String,
+    pub installed_at: u64,
+    /// Set when `uninstall` succeeded. A rollback after that reinstalls.
+    #[serde(default)]
+    pub uninstalled_at: Option<u64>,
+    /// Snapshot directory holding the scripts and manifest that ran.
+    pub directory: PathBuf,
+    #[serde(default)]
+    pub previous: Option<Box<Receipt>>,
+}
+
+/// How many earlier versions a receipt keeps. Enough to walk back through a
+/// bad release, bounded so a host that updates often cannot grow forever.
+pub const RECEIPT_HISTORY: usize = 5;
+
+pub fn receipt_path(state_root: &Path, id: &str) -> PathBuf {
+    state_root.join(id).join("receipt.json")
+}
+
+pub fn read_receipt(state_root: &Path, id: &str) -> Option<Receipt> {
+    let bytes = std::fs::read(receipt_path(state_root, id)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+pub fn write_receipt(state_root: &Path, receipt: &Receipt) -> Result<(), String> {
+    let path = receipt_path(state_root, &receipt.id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let body = serde_json::to_vec_pretty(receipt).map_err(|error| error.to_string())?;
+    std::fs::write(&path, body).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Copy the entry's own files into the install state, returning that directory.
+fn snapshot(entry: &Entry, state_root: &Path) -> Result<PathBuf, String> {
+    let version_dir = state_root
+        .join(&entry.manifest.id)
+        .join("versions")
+        .join(&entry.manifest.version);
+    std::fs::create_dir_all(&version_dir)
+        .map_err(|error| format!("{}: {error}", version_dir.display()))?;
+    let mut copied = 0usize;
+    for item in std::fs::read_dir(&entry.dir).map_err(|error| error.to_string())? {
+        let item = item.map_err(|error| error.to_string())?;
+        let path = item.path();
+        let meta = item.metadata().map_err(|error| error.to_string())?;
+        if !meta.is_file() || meta.len() > 256 * 1024 {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::copy(&path, version_dir.join(name))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        copied += 1;
+        if copied >= 32 {
+            break;
+        }
+    }
+    // The snapshot is only useful if it carries the manifest it belongs to.
+    let manifest = version_dir.join("manifest.json");
+    if !manifest.is_file() {
+        let body = serde_json::to_vec_pretty(&entry.manifest).map_err(|e| e.to_string())?;
+        std::fs::write(&manifest, body).map_err(|error| error.to_string())?;
+    }
+    Ok(version_dir)
+}
+
+fn record_install(entry: &Entry, state_root: &Path) -> Result<Receipt, String> {
+    let previous = read_receipt(state_root, &entry.manifest.id).map(Box::new);
+    let directory = snapshot(entry, state_root)?;
+    let receipt = Receipt {
+        id: entry.manifest.id.clone(),
+        version: entry.manifest.version.clone(),
+        signer: entry.manifest.signer.clone(),
+        installed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default(),
+        uninstalled_at: None,
+        directory,
+        previous,
+    };
+    let receipt = truncate(receipt, RECEIPT_HISTORY);
+    write_receipt(state_root, &receipt)?;
+    Ok(receipt)
+}
+
+fn truncate(mut receipt: Receipt, keep: usize) -> Receipt {
+    let mut depth = 1;
+    let mut cursor: &mut Receipt = &mut receipt;
+    loop {
+        depth += 1;
+        if depth > keep {
+            cursor.previous = None;
+            break;
+        }
+        match cursor.previous.as_mut() {
+            Some(previous) => cursor = previous,
+            None => break,
+        }
+    }
+    receipt
+}
+
+/// Reinstall the version before the one currently recorded.
+pub fn rollback(
+    state_root: &Path,
+    id: &str,
+    allow_root: bool,
+    write: bool,
+) -> Result<Vec<String>, String> {
+    let current = read_receipt(state_root, id)
+        .ok_or_else(|| format!("{id} has no install receipt on this host; nothing to roll back"))?;
+    let Some(previous) = current.previous.clone() else {
+        return Err(format!(
+            "{id} {} is the only recorded version; there is nothing to roll back to",
+            current.version
+        ));
+    };
+    let manifest_path = previous.directory.join("manifest.json");
+    let bytes = std::fs::read(&manifest_path)
+        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+    let manifest: Manifest =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{manifest_path:?}: {error}"))?;
+    // The snapshot was trusted when it ran, but trust is checked again: a
+    // receipt is a file, and a file can be edited.
+    manifest
+        .verify()
+        .map_err(|error| format!("{id}: {error}"))?;
+    if manifest.requires.root && !allow_root {
+        return Err(format!(
+            "{id} {} needs root to reinstall; pass --allow-root",
+            manifest.version
+        ));
+    }
+    let entry = Entry {
+        manifest,
+        dir: previous.directory.clone(),
+    };
+    let mut lines = vec![format!(
+        "rollback {id}: {} -> {}",
+        current.version, entry.manifest.version
+    )];
+    if !write {
+        lines.push("plan only; pass --write to run it".into());
+        return Ok(lines);
+    }
+    let mut restore = run_step_in(&entry, Action::Install, allow_root, true, state_root, true)?;
+    lines.append(&mut restore);
+    lines.extend(run_step_in(
+        &entry,
+        Action::Verify,
+        allow_root,
+        true,
+        state_root,
+        true,
+    )?);
+    // The install just recorded the previous version as current and kept the
+    // newer one as `previous`, which would make the next rollback a re-upgrade.
+    if let Some(mut restored) = read_receipt(state_root, id) {
+        restored.previous = previous.previous;
+        write_receipt(state_root, &restored)?;
+    }
+    lines.push(format!("rolled back to {}", entry.manifest.version));
+    Ok(lines)
+}
+
 pub fn run_step(
     entry: &Entry,
     action: Action,
     allow_root: bool,
     write: bool,
+) -> Result<Vec<String>, String> {
+    run_step_in(
+        entry,
+        action,
+        allow_root,
+        write,
+        &myceliumd::home_dir().join("managed"),
+        false,
+    )
+}
+
+pub fn run_step_in(
+    entry: &Entry,
+    action: Action,
+    allow_root: bool,
+    write: bool,
+    state_root: &Path,
+    rolling_back: bool,
 ) -> Result<Vec<String>, String> {
     let manifest = &entry.manifest;
     if manifest.signature.is_empty() {
@@ -302,9 +498,10 @@ pub fn run_step(
         .env("MYCELIUM_MANAGED_ID", &manifest.id)
         .env("MYCELIUM_MANAGED_VERSION", &manifest.version)
         .env("MYCELIUM_MANAGED_DIR", &entry.dir)
+        .env("MYCELIUM_MANAGED_STATE", state_root.join(&manifest.id))
         .env(
-            "MYCELIUM_MANAGED_STATE",
-            myceliumd::home_dir().join("managed").join(&manifest.id),
+            "MYCELIUM_MANAGED_ROLLBACK",
+            if rolling_back { "1" } else { "0" },
         )
         .status()
         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -312,6 +509,29 @@ pub fn run_step(
         return Err(format!("{name} exited with {status}"));
     }
     lines.push(format!("{name} finished"));
+    match action {
+        Action::Install => {
+            let receipt = record_install(entry, state_root)?;
+            lines.push(format!(
+                "recorded {} {} (receipt {})",
+                receipt.id,
+                receipt.version,
+                receipt_path(state_root, &receipt.id).display()
+            ));
+        }
+        Action::Uninstall => {
+            if let Some(mut receipt) = read_receipt(state_root, &manifest.id) {
+                receipt.uninstalled_at = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|elapsed| elapsed.as_secs())
+                        .unwrap_or_default(),
+                );
+                write_receipt(state_root, &receipt)?;
+            }
+        }
+        Action::Check | Action::Verify => {}
+    }
     Ok(lines)
 }
 
@@ -446,5 +666,115 @@ mod tests {
         };
         let error = run_step(&entry, Action::Check, true, true).unwrap_err();
         assert!(error.contains("unsigned"), "{error}");
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn entry_at(dir: &Path, version: &str) -> Entry {
+        std::fs::create_dir_all(dir).unwrap();
+        let (mut manifest, _) = signed();
+        manifest.version = version.into();
+        manifest.requires.root = false;
+        write_script(
+            &dir.join("install.sh"),
+            "#!/bin/sh\nmkdir -p \"$MYCELIUM_MANAGED_STATE\"\nprintf '%s' \"$MYCELIUM_MANAGED_VERSION\" >\"$MYCELIUM_MANAGED_STATE/version\"\nprintf '%s' \"$MYCELIUM_MANAGED_ROLLBACK\" >\"$MYCELIUM_MANAGED_STATE/rollback\"\n",
+        );
+        write_script(
+            &dir.join("verify.sh"),
+            "#!/bin/sh\ntest -f \"$MYCELIUM_MANAGED_STATE/version\"\n",
+        );
+        let manifest = manifest
+            .sign(&SigningKey::generate(&mut rand_core::OsRng))
+            .unwrap();
+        Entry {
+            manifest,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    fn state() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "mycelium-managed-receipt-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn install_records_a_receipt_and_a_snapshot() {
+        let root = state();
+        let dir = root.join("catalogue");
+        let entry = entry_at(&dir, "1.0.0");
+        run_step_in(&entry, Action::Install, false, true, &root, false).unwrap();
+        let receipt = read_receipt(&root, entry.manifest.id.as_str()).expect("receipt");
+        assert_eq!(receipt.version, "1.0.0");
+        assert!(receipt.directory.join("install.sh").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join(&entry.manifest.id).join("version")).unwrap(),
+            "1.0.0"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(&entry.manifest.id).join("rollback")).unwrap(),
+            "0"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rollback_reinstalls_the_previous_version_and_pops_it() {
+        let root = state();
+        let dir = root.join("catalogue");
+        let first = entry_at(&dir, "1.0.0");
+        run_step_in(&first, Action::Install, false, true, &root, false).unwrap();
+
+        // The catalogue moves on; the snapshot is what makes rollback possible.
+        let second = entry_at(&dir, "2.0.0");
+        run_step_in(&second, Action::Install, false, true, &root, false).unwrap();
+        assert_eq!(
+            read_receipt(&root, "cloudflared-tunnel").unwrap().version,
+            "2.0.0"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+
+        rollback(&root, "cloudflared-tunnel", false, true).unwrap();
+        let receipt = read_receipt(&root, "cloudflared-tunnel").unwrap();
+        assert_eq!(receipt.version, "1.0.0");
+        assert!(
+            receipt.previous.is_none(),
+            "one rollback consumed the history"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("cloudflared-tunnel").join("version")).unwrap(),
+            "1.0.0"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("cloudflared-tunnel").join("rollback")).unwrap(),
+            "1"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_single_version_has_nothing_to_roll_back_to() {
+        let root = state();
+        let dir = root.join("catalogue");
+        let entry = entry_at(&dir, "1.0.0");
+        run_step_in(&entry, Action::Install, false, true, &root, false).unwrap();
+        let error = rollback(&root, "cloudflared-tunnel", false, true).unwrap_err();
+        assert!(error.contains("nothing to roll back to"), "{error}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rollback_without_a_receipt_is_refused() {
+        let root = state();
+        let error = rollback(&root, "cloudflared-tunnel", false, true).unwrap_err();
+        assert!(error.contains("no install receipt"), "{error}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
