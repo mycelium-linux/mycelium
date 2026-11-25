@@ -14,6 +14,7 @@ mod frontdoor;
 mod host_access;
 mod host_accounts;
 mod host_supervisor;
+mod ingress_route;
 mod invite;
 mod iroh_tun;
 mod managed;
@@ -740,6 +741,7 @@ async fn run(cmd: &str, args: &[String]) -> Result<Vec<String>, ClientError> {
         }
         "resources" => resources(args).await,
         "services" => services(args).await,
+        "ingress" => ingress_command(args).await,
         "iroh-tun" => iroh_tun::run(args).await.map_err(access_error),
         "debug" if args.first().is_some_and(|argument| argument == "hardware") => {
             hardware(&args[1..]).await
@@ -4264,6 +4266,112 @@ async fn resources(args: &[String]) -> Result<Vec<String>, ClientError> {
         ]);
     }
     Ok(render_resources(&catalog))
+}
+
+fn common_site(catalog: &serde_json::Value) -> Option<String> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for observation in catalog.get("observations").and_then(|v| v.as_array())? {
+        if let Some(site) = observation
+            .get("value")
+            .and_then(|v| v.get("attributes"))
+            .and_then(|v| v.get("site"))
+            .and_then(|v| v.as_str())
+        {
+            *counts.entry(site.to_owned()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(site, _)| site)
+}
+
+/// `mycelium ingress route HOST` — which node should serve a public name.
+///
+/// This is the routing half of ingress: a connector asks the catalogue instead
+/// of guessing an upstream, and the answer names a node and an ALPN so the
+/// caller can reach it over the mesh rather than a stale address.
+async fn ingress_command(args: &[String]) -> Result<Vec<String>, ClientError> {
+    let action = args.first().map(String::as_str).unwrap_or("route");
+    if action != "route" {
+        return Err(err_usage(&format!("unknown ingress action `{action}`")));
+    }
+    let host = args
+        .get(1)
+        .ok_or_else(|| err_usage("ingress route needs a hostname, e.g. scribe.fpl.dev"))?;
+    let mut json = false;
+    let mut site: Option<String> = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--site" => {
+                index += 1;
+                site = Some(
+                    args.get(index)
+                        .ok_or_else(|| err_usage("--site needs a value"))?
+                        .clone(),
+                );
+            }
+            other => return Err(err_usage(&format!("unknown ingress argument `{other}`"))),
+        }
+        index += 1;
+    }
+    let mut client = connect().await?;
+    if site.is_none() {
+        // The caller's own site is the affinity a connector wants; only ask the
+        // daemon when the operator did not override it.
+        if let Ok(hello) = client.call(&Request::Hello).await {
+            site = hello
+                .get("site")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+        }
+    }
+    let catalog = client.call(&Request::Services).await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let mut found = ingress_route::candidates(&catalog, host, now);
+    let chosen = ingress_route::best(found.clone(), site.as_deref());
+    ingress_route::rank(&mut found, site.as_deref());
+    found.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));
+    if json {
+        return Ok(vec![serde_json::json!({
+            "host": host,
+            "site": site,
+            "chosen": chosen,
+            "candidates": found,
+        })
+        .to_string()]);
+    }
+    match chosen {
+        Some(route) => {
+            let mut lines = vec![format!(
+                "{} -> {} ({}){}",
+                host,
+                route.name,
+                route.site.as_deref().unwrap_or("unknown site"),
+                route
+                    .node_id
+                    .as_deref()
+                    .map(|node| format!(" node {node}"))
+                    .unwrap_or_default()
+            )];
+            for endpoint in &route.endpoints {
+                lines.push(format!("  endpoint {endpoint}"));
+            }
+            if !route.alpns.is_empty() {
+                lines.push(format!("  alpns {}", route.alpns.join(", ")));
+            }
+            Ok(lines)
+        }
+        None => Err(ClientError::Rpc {
+            message: format!("no service advertises {host}"),
+            kind: "no_route".into(),
+        }),
+    }
 }
 
 async fn services(args: &[String]) -> Result<Vec<String>, ClientError> {
