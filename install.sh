@@ -53,6 +53,10 @@ RELEASE_CHANNEL=
 # Release public keys this host will accept, hex. Repeatable; seeded from the
 # environment so a fleet installer can pin the authority's key once.
 RELEASE_KEYS=${MYCELIUM_RELEASE_KEYS:-}
+# Public key that signs release-manifests.json for the OS verifier. Pinned here
+# because a key fetched from the same release it authenticates is not a trust
+# anchor; a rotation changes this line in a reviewed commit.
+RELEASE_SSH_SIGNER=${MYCELIUM_RELEASE_SSH_SIGNER:-"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9wzQ7aEGWgxHnwuL90yrHHgMJDPScqR57hjmBFSQtw release@fpl.dev"}
 IROH_TUN_REPO=${IROH_TUN_REPO:-https://github.com/ajmwagar/iroh-tun.git}
 VFS_REPO=${VFS_REPO:-https://github.com/mycelium-linux/fungos-vfs.git}
 SOIL_REPO=${SOIL_REPO:-https://github.com/mycelium-linux/soil.git}
@@ -463,12 +467,28 @@ fetch_release() {
     actual=$(sha256_file "$tmp/$archive")
     [ "$actual" = "$expected" ] \
         || die "checksum mismatch for $archive (expected $expected, got $actual)"
+    # The manifest is verified with the OS verifier before anything from the
+    # archive runs. ssh-keygen is part of macOS; a host without it cannot be
+    # given a bootstrap it can verify, so it is required.
+    command -v ssh-keygen >/dev/null 2>&1 \
+        || die "ssh-keygen is required to verify the release manifest"
+    manifest="$tmp/release-manifests.json"
+    manifest_sig="$tmp/release-manifests.json.sig"
+    curl -fsSL "$base/release-manifests.json.sig" -o "$manifest_sig" 2>/dev/null \
+        || die "release has no signed manifest (release-manifests.json.sig)"
+    [ -f "$manifest" ] || curl -fsSL "$base/release-manifests.json" -o "$manifest" \
+        || die "release has no manifest to verify"
+    allowed="$tmp/allowed_signers"
+    printf 'release@fpl.dev %s\n' "$RELEASE_SSH_SIGNER" >"$allowed"
+    ssh-keygen -Y verify -f "$allowed" -I release@fpl.dev \
+        -n mycelium-release -s "$manifest_sig" <"$manifest" >/dev/null 2>&1 \
+        || die "release manifest signature is not valid for the pinned signer"
+    note "manifest signature verified (release@fpl.dev)"
+
     tar -C "$RELEASE_DIR" -xzf "$tmp/$archive" || die "could not unpack $archive"
-    # The signed manifest binds the archive's binary to a signer. It is written
-    # by scripts/release.sh and published beside the archive; without it, this is
-    # still a checksum-only download, so say so rather than implying otherwise.
-    manifest=$tmp/release-manifests.json
-    if curl -fsSL "$base/release-manifests.json" -o "$manifest" 2>/dev/null; then
+    # The verified manifest binds the archive's binary to a signer and to the
+    # digest that signer vouched for.
+    if [ -f "$manifest" ]; then
         # release-manifests.json is compact; normalise `":` so one matcher
         # works for both layouts.
         entry=$(tr '\n' ' ' <"$manifest" | sed 's/":/": /g' | grep -o '{[^{}]*}' | grep -F "\"target\": \"$target\"" | head -1)
@@ -488,8 +508,6 @@ fetch_release() {
         fi
         note "binary matches the signed manifest (signer ${signer:0:12}, digest ${digest:0:12})"
         note "verify the manifest signature out of band, or let updates do it: mycelium releases verify --manifest release-manifests.json"
-    else
-        warn "this release has no release-manifests.json; only the checksum was verified"
     fi
     rm -rf "$tmp"
     BIN_SRC=$RELEASE_DIR

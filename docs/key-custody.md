@@ -29,6 +29,23 @@ change, and no host could have verified a new managed install anyway.
 `14f5…` is the current signer: `packaging/managed/trusted-keys.txt` records it,
 and the catalogue is signed with it.
 
+## Bootstrap manifest signer
+
+The installer verifies `release-manifests.json` with `ssh-keygen` before running
+anything, against a public key pinned in `install.sh`. Its private half is
+`~/.mycelium/release-ssh-signing` (0600, studio); the public key is:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9wzQ7aEGWgxHnwuL90yrHHgMJDPScqR57hjmBFSQtw release@fpl.dev
+```
+
+`scripts/release.sh --publish` signs the manifest with it (namespace
+`mycelium-release`) and uploads `release-manifests.json.sig` and
+`allowed_signers`. Rotating it is a reviewed change to the pinned line in
+`install.sh` **and** the release key: publish the new public key first, then sign
+with it. Do not fetch `allowed_signers` from the release and trust it; that
+would let the release vouch for itself.
+
 ## Custody
 
 - **Private key**: `~/.mycelium/release-signing.key` on `studio`, mode `0600`,

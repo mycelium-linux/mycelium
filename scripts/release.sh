@@ -12,6 +12,7 @@ cd "$ROOT"
 
 VERSION=
 CHANNEL=${MYCELIUM_RELEASE_CHANNEL:-canary}
+MANIFEST_SIGNING_KEY=${MYCELIUM_RELEASE_SSH_KEY:-}
 TARGETS=()
 OUT=${MYCELIUM_RELEASE_DIR:-$ROOT/dist/releases}
 PUBLISH=0
@@ -138,6 +139,10 @@ Signing and mesh:
   --apple-identity NAME  codesign macOS binaries with this identity
   --mesh                 publish the signed release set to the running daemon
   --signing-key PATH     Ed25519 release key for --mesh
+  --manifest-signing-key PATH
+                         OpenSSH key that signs release-manifests.json, so a host
+                         can verify it with stock ssh-keygen before executing
+                         anything (default: $MYCELIUM_RELEASE_SSH_KEY)
 
 Automation:
   --watch                poll v* tags and release new ones; implies --publish
@@ -168,6 +173,7 @@ while [ $# -gt 0 ]; do
         --apple-identity) [ $# -ge 2 ] || die "--apple-identity needs a name"; APPLE_IDENTITY=$2; shift 2 ;;
         --mesh) MESH=1; shift ;;
         --signing-key) [ $# -ge 2 ] || die "--signing-key needs a path"; SIGNING_KEY=$2; shift 2 ;;
+        --manifest-signing-key) [ $# -ge 2 ] || die "--manifest-signing-key needs a path"; MANIFEST_SIGNING_KEY=$2; shift 2 ;;
         --remote-host) [ $# -ge 2 ] || die "--remote-host needs a host"; REMOTE_HOST=$2; shift 2 ;;
         --remote-mac-host) [ $# -ge 2 ] || die "--remote-mac-host needs a host"; REMOTE_MAC_HOST=$2; shift 2 ;;
         --remote-clean) REMOTE_CLEAN=1; shift ;;
@@ -574,6 +580,18 @@ write_release_manifests() {
     } >"$manifests"
     ASSETS+=("$manifests")
     note "wrote $manifests"
+
+    # A signature a stock host can check before it runs anything: ssh-keygen
+    # ships with macOS and verifies Ed25519, while the system LibreSSL cannot.
+    # Publishing is refused without one, so a release is never unverifiable.
+    [ -n "$MANIFEST_SIGNING_KEY" ] || die "--publish needs --manifest-signing-key (or MYCELIUM_RELEASE_SSH_KEY): a manifest without an OS-verifiable signature cannot bootstrap a host"
+    [ -f "$MANIFEST_SIGNING_KEY" ] || die "manifest signing key not found: $MANIFEST_SIGNING_KEY"
+    ssh-keygen -Y sign -f "$MANIFEST_SIGNING_KEY" -n mycelium-release "$manifests" >/dev/null
+    local sig="$manifests.sig"
+    local allowed="$dir/allowed_signers"
+    printf 'release@fpl.dev %s\n' "$(cat "$MANIFEST_SIGNING_KEY.pub")" >"$allowed"
+    ASSETS+=("$sig" "$allowed")
+    note "signed $manifests (ssh-keygen -Y, namespace mycelium-release)"
 }
 
 publish_release() {
