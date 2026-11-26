@@ -67,6 +67,13 @@ pub struct UpdateState {
     pub staged_since: Option<u64>,
     #[serde(default)]
     pub last_attempt_at: Option<u64>,
+    /// The release this host ran before the current one. `.previous` beside the
+    /// binary is the last-known-good bytes; these fields name them so `update
+    /// status` can say what a rollback would install.
+    #[serde(default)]
+    pub previous_version: Option<String>,
+    #[serde(default)]
+    pub previous_digest: Option<String>,
 }
 
 /// Resolve the state dir. Inferred, not configured, unless overridden.
