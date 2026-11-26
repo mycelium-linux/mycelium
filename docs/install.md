@@ -156,6 +156,18 @@ they leave the catalog, so the overlay is a routed network without hand-edited
 routes (see [iroh-tun.md](iroh-tun.md)). On macOS the root wrapper assigns the
 address with `ifconfig`; on Linux it uses `ip -6 addr replace`.
 
+If `iroh-tun` is already installed but the root service is missing or broken, the
+service can be managed without re-running the whole installer:
+
+```sh
+sudo mycelium iroh-tun install --overlay "$(mycelium iroh-tun address)" --tun utun220
+sudo mycelium iroh-tun repair
+sudo mycelium iroh-tun uninstall          # add --purge to disable the tunnel config
+```
+
+All three are idempotent, refuse to run without root, and accept `--dry-run` to
+print the wrapper, plist/unit and config they would write.
+
 To remove the root service later:
 
 ```sh

@@ -17,6 +17,7 @@ mod host_supervisor;
 mod ingress_route;
 mod invite;
 mod iroh_tun;
+mod iroh_tun_service;
 mod managed;
 mod node;
 mod oidc;
@@ -190,6 +191,9 @@ usage:
   mycelium iroh-tun status [--json]
   mycelium iroh-tun address [--json]
   mycelium iroh-tun config [--tun IFACE] [--overlay CIDR]... [--mtu N] [--refresh-secs N]
+  mycelium iroh-tun install --overlay ADDRESS [--tun IFACE] [--from DIR] [--dry-run]
+  mycelium iroh-tun repair [--dry-run]
+  mycelium iroh-tun uninstall [--purge] [--dry-run]
                             [--listen IP:PORT] [--external true|false] [--status PATH]
                             [--enabled true|false] --write
   mycelium debug hardware [PEER] [--json]

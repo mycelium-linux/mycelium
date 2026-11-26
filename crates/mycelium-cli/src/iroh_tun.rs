@@ -20,10 +20,16 @@ pub async fn run(args: &[String]) -> Result<Vec<String>, String> {
         "status" => status(rest).await,
         "config" => config(rest).await,
         "address" => address(rest).await,
+        "install" | "repair" | "uninstall" => service(&args[0], rest),
         other => Err(format!(
             "unknown iroh-tun action `{other}`; try `status`, `config` or `address`"
         )),
     }
+}
+
+/// Install, repair or remove the privileged tunnel service.
+fn service(action: &str, args: &[String]) -> Result<Vec<String>, String> {
+    crate::iroh_tun_service::run(action, args)
 }
 
 /// The overlay address this node owns, derived from its identity.
