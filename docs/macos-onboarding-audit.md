@@ -19,25 +19,30 @@ clearly.
 
 ## Download and verification
 
+**Updated 2026-11-25:** a signed release now exists on the GitHub train.
+
 ```text
-install.sh default base   https://releases.fungos.dev/mycelium   → connection failed (000)
-bootstrap URL             https://fungos.dev/install.sh          → connection failed (000)
-GitHub v0.1.3 assets      archives + SHA256SUMS + unsigned JSON  → reachable
-signed manifests          mesh only (daemon ReleaseList)          → not reachable before enrollment
+v0.1.4 assets             archive + SHA256SUMS + release-manifests.json
+                          + release-metadata.json + release-set.json
+signer                    14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8
+manifest verification     `mycelium releases verify … --trusted-key 14f5…` → verified
+binary binding            archive's `mycelium` sha256 == manifest artifact_digest
+installer                 checks checksum, then requires the binary to equal the
+                          signed manifest's digest and the signer to be pinned
+install.sh default base   https://releases.fungos.dev/mycelium   → still down (000)
+bootstrap URL             https://fungos.dev/install.sh          → still down (000)
 ```
 
-Consequences:
+What is fixed: the founder path uses the repo installer from `raw.githubusercontent.com`
+with `--release v0.1.4 --release-key 14f5…`, so the download is bound to the
+signed manifest and the pinned signer. What is not: no shell Ed25519 verifier
+runs during bootstrap (stock macOS LibreSSL cannot verify Ed25519), so the
+manifest **signature** is checked out of band or by later updates. Relocating
+the `fungos.dev` bootstrap URL and `releases.fungos.dev` base remains open.
 
-- `curl … https://fungos.dev/install.sh | sh` cannot work today.
-- The GitHub mirror carries **checksums, not signatures**; `docs/releasing.md`
-  already lists "Signed manifest files uploaded beside the artifacts" as missing.
-- The signed manifests a founder would need exist only on the mesh, i.e. after
-  enrolment — a chicken-and-egg for a trust-on-first-install story.
-
-Verified: v0.1.3 `aarch64-apple-darwin` archive downloaded, SHA-256 matched
-`SHA256SUMS`, extracted to `mycelium`, `iroh-tun`, `mycelium-frontdoor`,
-`mycelium-ingress`, `geoded`; `mycelium doctor` runs (daemon absent in a clean
-`HOME`, as expected).
+Verified end to end in a clean `HOME`: installer exit 0, digest matched the
+manifest, binaries installed, `release-source.json` pinned to channel `stable`
+and key `14f5…`; `mycelium doctor` runs.
 
 ## Signing and rollback
 
@@ -111,17 +116,21 @@ Smallest useful implementation, separate from commercial work:
 
 ## Exact blockers
 
-1. `releases.fungos.dev` and `fungos.dev/install.sh` are down; the installer
-   cannot fetch a binary.
-2. No signed manifests beside the GitHub artifacts (checksums only), so
-   provenance cannot be verified before enrollment.
+1. `releases.fungos.dev` and `fungos.dev/install.sh` are down; the founder path
+   therefore uses the raw GitHub installer URL. **(partially fixed)**
+2. Signed manifests are now published beside the v0.1.4 artifacts and the
+   installer binds the binary to them; a shell signature verifier during
+   bootstrap is still missing. **(partially fixed)**
 3. No `x86_64-apple-darwin` Mycelium artifact → Intel unsupported.
 4. Signed releases are signed by a key whose private half is missing; new
    releases must use `14f5…` and the fleet must stay dual-trust during rotation.
 5. No `mycelium update rollback` (no last-known-good binary kept).
 6. fpl-auth SMTP has no credentials → magic-link sign-in cannot deliver mail.
-7. `iroh-tun` root child only arrives via `setup --system-service`, which is
-   blocked by (1).
+7. `iroh-tun` root child only arrived via `setup --system-service`. Now
+   `mycelium iroh-tun install|repair|uninstall` manages it directly; the live
+   privileged path was **not executed** because sudo is interactive in this
+   environment (dry-run and unit tests pass). **(command implemented, live test
+   blocked)**
 8. Enrollment claims require an authorised human; none were minted here.
 
 ## What was not changed

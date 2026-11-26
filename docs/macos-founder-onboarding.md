@@ -41,27 +41,50 @@ Access to fleet services comes from your enrolled node identity and from
 
 ## 1. Install Mycelium (Apple Silicon)
 
-The bootstrap installer is currently blocked by a dead release host, so this is
-the verified-today path. It checks the published SHA-256; it does **not** verify
-a signature, because the GitHub mirror carries none. That is a known gap, not a
-recommendation.
+The bootstrap is the repo installer pointed at the signed release. It verifies
+the archive checksum **and** that the installed binary is the one the signed
+`release-manifests.json` names, and refuses a signer that is not the pinned key.
+It does not run a signature verifier — the release manifest signature is
+verified out of band (or by every subsequent update):
 
 ```sh
-set -eu
-VERSION=v0.1.3
-T=$(mktemp -d) && cd "$T"
-gh release download "$VERSION" --repo mycelium-linux/mycelium \
-  --pattern 'mycelium-*-aarch64-apple-darwin.tar.gz' --pattern SHA256SUMS
-shasum -a 256 -c SHA256SUMS 2>&1 | grep 'aarch64-apple-darwin'
-tar -xzf mycelium-*-aarch64-apple-darwin.tar.gz
-mkdir -p "$HOME/.local/bin"
-install -m 755 mycelium "$HOME/.local/bin/mycelium"
-install -m 755 iroh-tun "$HOME/.local/bin/iroh-tun"
-"$HOME/.local/bin/mycelium" doctor || true   # expected: no daemon yet
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/mycelium-linux/mycelium/master/install.sh \
+  | sh -s -- --release v0.1.4 \
+      --release-key 14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8
 ```
 
-Verified 2026-11-25: archive extracts, SHA-256 matches, binary is
-`Mach-O 64-bit executable arm64`, `doctor` runs.
+Pin the full signer, not a prefix. To verify the release by hand:
+
+```sh
+gh release download v0.1.4 --repo mycelium-linux/mycelium \
+  --pattern 'mycelium-v0.1.4-aarch64-apple-darwin.tar.gz' \
+  --pattern release-manifests.json
+tar -xzf mycelium-v0.1.4-aarch64-apple-darwin.tar.gz
+shasum -a 256 mycelium          # must equal artifact_digest in release-manifests.json
+mycelium releases verify --manifest release-manifests.json \
+  --trusted-key 14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8
+```
+
+Verified 2026-11-25 on Apple Silicon: installer exit 0 from a clean `HOME`,
+binaries installed, `release-source.json` written with channel `stable` and the
+pinned key, `mycelium doctor` runs. Apple Gatekeeper will still warn because the
+binaries are not notarized; the installer's `xattr` handling is a separate
+step (see "Notarization" below).
+
+### Recovery
+
+If the install fails, the previous binaries remain in
+`~/.local/bin` (`mycelium` is replaced atomically). To fall back to the manually
+verified tarball:
+
+```sh
+gh release download v0.1.4 --repo mycelium-linux/mycelium \
+  --pattern 'mycelium-v0.1.4-aarch64-apple-darwin.tar.gz' --pattern SHA256SUMS
+shasum -a 256 -c SHA256SUMS 2>&1 | grep aarch64-apple-darwin
+tar -xzf mycelium-v0.1.4-aarch64-apple-darwin.tar.gz
+install -m 755 mycelium iroh-tun "$HOME/.local/bin/"
+```
 
 ## 2. Join the fleet
 
@@ -87,9 +110,15 @@ mycelium iroh-tun status
 root child is running. `0 peer prefixes learned` is normal on the first node and
 a warning, not a failure, on a later one.
 
-**Untested from a clean machine**: steps 2's launchd/iroh-tun installation.
-Executed only on an already-installed host, where `iroh-tun` reports a healthy
-external root service.
+**Untested from a clean machine**: step 2's launchd/iroh-tun installation (sudo
+is interactive in the test environment). Executed only on an already-installed
+host, where `iroh-tun` reports a healthy external root service. The root service
+can now be repaired without re-enrolling:
+
+```sh
+sudo mycelium iroh-tun install --overlay "$(mycelium iroh-tun address)" --tun utun220
+sudo mycelium iroh-tun repair
+```
 
 ## 3. Install Loam
 
