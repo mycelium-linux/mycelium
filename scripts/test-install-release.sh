@@ -41,10 +41,21 @@ fixture() {
 }
 EOF
     printf '%s  %s\n' "$sha" "$asset" >"$dir/SHA256SUMS"
+
+    # The manifest names the binary inside the archive, not the archive, and is
+    # signed with a key the test pins. This is the same chain a founder gets.
+    bin_sha=$(sha256_file "$WORK/stage/mycelium")
+    cat >"$dir/release-manifests.json" <<EOF
+[{"version":"$version","channel":"stable","target":"$target","protocol_version":1,"artifact_digest":"$bin_sha","artifact_size":$(wc -c <"$WORK/stage/mycelium"),"signer":"$(printf 'a%.0s' {1..64})","signature":""}]
+EOF
+    ssh-keygen -q -t ed25519 -N '' -C release@fpl.dev -f "$WORK/manifest-key"
+    ssh-keygen -Y sign -f "$WORK/manifest-key" -n mycelium-release "$dir/release-manifests.json" >/dev/null
+    printf 'release@fpl.dev %s\n' "$(cat "$WORK/manifest-key.pub")" >"$dir/allowed_signers"
 }
 
 release=$WORK/release
 fixture "$release"
+RELEASE_SSH_SIGNER="$(cat "$WORK/manifest-key.pub")"
 RELEASE_VERSION=$version
 RELEASE_BASE="file://$release"
 fetch_release
@@ -74,6 +85,28 @@ if (RELEASE_VERSION=$version; RELEASE_BASE="file://$bad"; fetch_release) >/dev/n
     fail "disagreeing checksum sources were accepted"
 fi
 ok "rejects metadata and SHA256SUMS that disagree"
+
+bad=$WORK/bad-manifest
+cp -R "$release" "$bad"
+python3 - "$bad/release-manifests.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+manifests = json.load(open(path))
+manifests[0]["version"] = "0.0.0-evil"
+open(path, "w").write(json.dumps(manifests))
+PY
+if (RELEASE_SSH_SIGNER="$RELEASE_SSH_SIGNER"; RELEASE_VERSION=$version; RELEASE_BASE="file://$bad"; fetch_release) >/dev/null 2>&1; then
+    fail "a manifest with an invalid signature was accepted"
+fi
+ok "rejects a tampered manifest before unpacking"
+
+bad=$WORK/bad-no-sig
+cp -R "$release" "$bad"
+rm "$bad/release-manifests.json.sig"
+if (RELEASE_SSH_SIGNER="$RELEASE_SSH_SIGNER"; RELEASE_VERSION=$version; RELEASE_BASE="file://$bad"; fetch_release) >/dev/null 2>&1; then
+    fail "a release without a manifest signature was accepted"
+fi
+ok "rejects a release without a manifest signature"
 
 bad=$WORK/bad-no-sums
 cp -R "$release" "$bad"
