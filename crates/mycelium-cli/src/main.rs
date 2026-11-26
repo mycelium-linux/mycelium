@@ -3223,6 +3223,9 @@ async fn update(args: &[String]) -> Result<Vec<String>, ClientError> {
             "artifact": artifact,
             "available": available,
             "installed_digest": installed_digest,
+            "rollback_available": rollback_available(),
+            "previous_version": state.previous_version,
+            "previous_digest": state.previous_digest,
             "activation": state,
         });
         return if flags.json {
@@ -3237,6 +3240,15 @@ async fn update(args: &[String]) -> Result<Vec<String>, ClientError> {
                     if available { "ready" } else { "downloading" },
                 ),
                 format!(
+                    "rollback={} previous={}",
+                    if status["rollback_available"].as_bool() == Some(true) {
+                        "available"
+                    } else {
+                        "none"
+                    },
+                    status["previous_version"].as_str().unwrap_or("unrecorded"),
+                ),
+                format!(
                     "installed={} activation={} error={}",
                     status["installed_digest"].as_str().unwrap_or("unknown"),
                     status["activation"]["activation_state"]
@@ -3249,6 +3261,9 @@ async fn update(args: &[String]) -> Result<Vec<String>, ClientError> {
                 ),
             ])
         };
+    }
+    if action == "rollback" {
+        return rollback_update(flags.write).await;
     }
     if action != "apply" {
         return Err(err_usage(&format!("unknown update action `{action}`")));
@@ -3275,7 +3290,10 @@ async fn update(args: &[String]) -> Result<Vec<String>, ClientError> {
         None => std::env::current_exe().map_err(ClientError::Io)?,
     };
     let activation = activate_update(&mut client, &artifact, &destination).await;
+    let prior = myceliumd::read_update_state();
     let mut state = myceliumd::UpdateState {
+        previous_version: prior.release_version.clone(),
+        previous_digest: prior.release_digest.clone(),
         release_version: Some(release.version.clone()),
         release_digest: Some(release.artifact_digest.clone()),
         release_target: Some(release.target.clone()),
@@ -3895,6 +3913,111 @@ fn build_update_report(
         lines,
         update_available: update_available + usize::from(local_needs_update),
     }
+}
+
+fn previous_binary(destination: &std::path::Path) -> Option<std::path::PathBuf> {
+    let parent = destination.parent()?;
+    let name = destination.file_name()?.to_str()?;
+    let previous = parent.join(format!(".{name}.previous"));
+    previous.is_file().then_some(previous)
+}
+
+fn rollback_available() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| previous_binary(&exe))
+        .is_some()
+}
+
+/// Install the binary this host ran before the current one.
+///
+/// `activate_update` already reverts automatically when a candidate fails its
+/// health check. This is the deliberate path: an operator decides the current
+/// release is wrong after it came up, and the previous bytes are still beside it.
+async fn rollback_update(write: bool) -> Result<Vec<String>, ClientError> {
+    if !write {
+        return Err(err_usage(
+            "update rollback replaces the running binary; pass --write",
+        ));
+    }
+    let destination = std::env::current_exe().map_err(ClientError::Io)?;
+    let previous = previous_binary(&destination).ok_or_else(|| {
+        err_usage("no previous binary is kept on this host; nothing to roll back to")
+    })?;
+    myceliumd::software_apt::require_native_executable(&destination)
+        .map_err(|error| err_usage(&error.to_string()))?;
+    let check = std::process::Command::new(&previous)
+        .arg("_self-check")
+        .output()
+        .map_err(ClientError::Io)?;
+    if !check.status.success() {
+        return Err(err_usage(
+            "the previous binary failed its self-check; keeping the current one",
+        ));
+    }
+    let mut client = connect().await?;
+    let state = myceliumd::read_update_state();
+    let supervisor = active_supervisor();
+    if let Some(supervisor) = &supervisor {
+        if let Some(pid) = supervisor.systemd_pid()? {
+            if !supervised_peer_matches(pid, client.peer_pid()?) {
+                return Err(err_usage("socket daemon is not owned by the Mycelium supervisor; reconcile the service before rolling back"));
+            }
+        }
+        supervisor.stop()?;
+    } else {
+        let _ = client.request(&Request::Shutdown).await;
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| err_usage("installed binary has no parent directory"))?;
+    let name = destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| err_usage("installed binary name is not UTF-8"))?;
+    let aside = parent.join(format!(".{name}.rolled-back"));
+    std::fs::rename(&destination, &aside).map_err(ClientError::Io)?;
+    if let Err(error) = std::fs::rename(&previous, &destination) {
+        let _ = std::fs::rename(&aside, &destination);
+        return Err(ClientError::Io(error));
+    }
+    start_daemon(supervisor.clone(), &destination)?;
+    if wait_for_daemon(supervisor.clone()).await.is_ok() {
+        let next = myceliumd::UpdateState {
+            release_version: state.previous_version.clone(),
+            release_digest: state.previous_digest.clone(),
+            release_target: state.release_target.clone(),
+            activation_state: "rolled_back".into(),
+            activated_at: Some(unix_now()),
+            last_error: None,
+            staged_digest: state.previous_digest.clone(),
+            staged_since: Some(unix_now()),
+            last_attempt_at: Some(unix_now()),
+            previous_version: state.release_version.clone(),
+            previous_digest: state.release_digest.clone(),
+        };
+        let _ = myceliumd::write_update_state(&next);
+        return Ok(vec![format!(
+            "rolled back to {}",
+            next.release_version
+                .as_deref()
+                .unwrap_or("the previous binary")
+        )]);
+    }
+    if let Some(supervisor) = &supervisor {
+        let _ = supervisor.stop();
+    }
+    let _ = std::fs::rename(
+        &destination,
+        parent.join(format!(".{name}.rollback-failed")),
+    );
+    std::fs::rename(&aside, &destination).map_err(ClientError::Io)?;
+    start_daemon(supervisor, &destination)?;
+    let _ = wait_for_daemon(active_supervisor()).await;
+    Err(ClientError::Protocol(
+        "previous binary failed its health check; restored the current one".into(),
+    ))
 }
 
 async fn activate_update(
