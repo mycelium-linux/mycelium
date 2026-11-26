@@ -470,7 +470,8 @@ mod install_tests {
             dir.display().to_string(),
         ];
         let lines = run("install", &args).expect("renders a plan").join("\n");
-        assert!(lines.contains("dev.fpl.iroh-tun"), "{lines}");
+        // The wrapper is rendered on every platform; the unit differs.
+        assert!(lines.contains("iroh-tun-root"), "{lines}");
         assert!(lines.contains("plan only"), "{lines}");
         std::fs::remove_dir_all(&dir).ok();
     }
