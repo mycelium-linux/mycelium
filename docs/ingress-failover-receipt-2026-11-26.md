@@ -26,6 +26,12 @@ There is a second tunnel, `f3cc7436-1837-427f-bbe1-5dc3d6cdf4e8`
 (`fpl-edge`), for `edge-canary.fpl.dev`, `ai-lab.fpl.dev`, and (on Pris)
 `twenty.fpl.dev`. It does not carry the wildcard.
 
+The edge tunnel already proves the per-host local-origin model: its
+`edge-canary.fpl.dev` rule points at `http://127.0.0.1:8099`, and the public
+response is the Pris listener (`pris`), not Batty. The wildcard could use the
+same shape (`https://127.0.0.1:446`) only if every connector host ran Palisade
+on 446; today only Batty does.
+
 ## Canary
 
 Stopped `cloudflared-fpl-ingress` on Pris, sampled the public paths every second
