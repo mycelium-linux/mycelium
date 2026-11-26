@@ -464,6 +464,33 @@ fetch_release() {
     [ "$actual" = "$expected" ] \
         || die "checksum mismatch for $archive (expected $expected, got $actual)"
     tar -C "$RELEASE_DIR" -xzf "$tmp/$archive" || die "could not unpack $archive"
+    # The signed manifest binds the archive's binary to a signer. It is written
+    # by scripts/release.sh and published beside the archive; without it, this is
+    # still a checksum-only download, so say so rather than implying otherwise.
+    manifest=$tmp/release-manifests.json
+    if curl -fsSL "$base/release-manifests.json" -o "$manifest" 2>/dev/null; then
+        # release-manifests.json is compact; normalise `":` so one matcher
+        # works for both layouts.
+        entry=$(tr '\n' ' ' <"$manifest" | sed 's/":/": /g' | grep -o '{[^{}]*}' | grep -F "\"target\": \"$target\"" | head -1)
+        digest=$(printf '%s' "$entry" | sed -n 's/.*"artifact_digest": *"\([^"]*\)".*/\1/p')
+        signer=$(printf '%s' "$entry" | sed -n 's/.*"signer": *"\([^"]*\)".*/\1/p')
+        [ -n "$digest" ] || die "release manifest has no entry for $target"
+        binary_actual=$(sha256_file "$RELEASE_DIR/mycelium")
+        [ "$binary_actual" = "$digest" ] \
+            || die "the archive's mycelium ($binary_actual) is not the binary the signed manifest names ($digest)"
+        if [ -n "$RELEASE_KEYS" ]; then
+            trusted=0
+            for key in $RELEASE_KEYS; do
+                [ "$key" = "$signer" ] && trusted=1
+            done
+            [ "$trusted" = 1 ] \
+                || die "release is signed by $signer, which is not among the pinned release keys"
+        fi
+        note "binary matches the signed manifest (signer ${signer:0:12}, digest ${digest:0:12})"
+        note "verify the manifest signature out of band, or let updates do it: mycelium releases verify --manifest release-manifests.json"
+    else
+        warn "this release has no release-manifests.json; only the checksum was verified"
+    fi
     rm -rf "$tmp"
     BIN_SRC=$RELEASE_DIR
     note "verified $archive (sha256 ${expected:0:12})"
