@@ -33,12 +33,22 @@ install.sh default base   https://releases.fungos.dev/mycelium   → still down 
 bootstrap URL             https://fungos.dev/install.sh          → still down (000)
 ```
 
-What is fixed: the founder path uses the repo installer from `raw.githubusercontent.com`
-with `--release v0.1.4 --release-key 14f5…`, so the download is bound to the
-signed manifest and the pinned signer. What is not: no shell Ed25519 verifier
-runs during bootstrap (stock macOS LibreSSL cannot verify Ed25519), so the
-manifest **signature** is checked out of band or by later updates. Relocating
-the `fungos.dev` bootstrap URL and `releases.fungos.dev` base remains open.
+**Updated 2026-11-26 — the trust chain is complete for bootstrap.**
+
+- `release-manifests.json` is signed with an OpenSSH Ed25519 key
+  (`release@fpl.dev`, namespace `mycelium-release`), published as
+  `release-manifests.json.sig` + `allowed_signers`.
+- `install.sh` pins that public key and verifies the manifest with stock
+  `ssh-keygen` **before extracting or executing anything**.
+- It then requires the archive's `mycelium` digest to equal the manifest's
+  `artifact_digest`, and the manifest's `signer` to be a pinned release key.
+- `scripts/release.sh --publish` now refuses to publish without
+  `--manifest-signing-key` (or `MYCELIUM_RELEASE_SSH_KEY`), so no future release
+  is unverifiable.
+
+Verified: clean-`HOME` install exit 0 with `manifest signature verified`; a
+tampered manifest on a local mirror is refused. Relocating the `fungos.dev`
+bootstrap URL and `releases.fungos.dev` base remains open.
 
 Verified end to end in a clean `HOME`: installer exit 0, digest matched the
 manifest, binaries installed, `release-source.json` pinned to channel `stable`
@@ -125,7 +135,12 @@ Smallest useful implementation, separate from commercial work:
 4. Signed releases are signed by a key whose private half is missing; new
    releases must use `14f5…` and the fleet must stay dual-trust during rotation.
 5. No `mycelium update rollback` (no last-known-good binary kept).
-6. fpl-auth SMTP has no credentials → magic-link sign-in cannot deliver mail.
+6. fpl-auth SMTP: the transport is built with **no authentication support at
+   all** (`SmtpMailer::new` → `builder_dangerous`), so this is a code change plus
+   a credential, not only a secret. Owner action: add username/password (or
+   OAuth) support to `SmtpMailer` and load the credential from geode
+   (`geode://mail/fpl/smtp`, purpose `fpl.auth.smtp`), never from the repo or a
+   chat.
 7. `iroh-tun` root child only arrived via `setup --system-service`. Now
    `mycelium iroh-tun install|repair|uninstall` manages it directly; the live
    privileged path was **not executed** because sudo is interactive in this

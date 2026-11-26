@@ -41,11 +41,12 @@ Access to fleet services comes from your enrolled node identity and from
 
 ## 1. Install Mycelium (Apple Silicon)
 
-The bootstrap is the repo installer pointed at the signed release. It verifies
-the archive checksum **and** that the installed binary is the one the signed
-`release-manifests.json` names, and refuses a signer that is not the pinned key.
-It does not run a signature verifier — the release manifest signature is
-verified out of band (or by every subsequent update):
+The bootstrap is the repo installer pointed at the signed release. Before it
+extracts anything it verifies `release-manifests.json` with **stock
+`ssh-keygen`** against a public key pinned in the installer (OpenSSH Ed25519,
+namespace `mycelium-release`), then requires the binary inside the archive to
+equal the digest that manifest names, and refuses a release key that is not
+pinned:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -64,13 +65,26 @@ tar -xzf mycelium-v0.1.4-aarch64-apple-darwin.tar.gz
 shasum -a 256 mycelium          # must equal artifact_digest in release-manifests.json
 mycelium releases verify --manifest release-manifests.json \
   --trusted-key 14f549457cc7e979037abc8cc7812d4cae92f9b3d104fde4f6e17b239ebeb0f8
+# the OS-verifiable signature over the manifest itself:
+ssh-keygen -Y verify -f allowed_signers -I release@fpl.dev \
+  -n mycelium-release -s release-manifests.json.sig < release-manifests.json
 ```
 
-Verified 2026-11-25 on Apple Silicon: installer exit 0 from a clean `HOME`,
-binaries installed, `release-source.json` written with channel `stable` and the
-pinned key, `mycelium doctor` runs. Apple Gatekeeper will still warn because the
-binaries are not notarized; the installer's `xattr` handling is a separate
-step (see "Notarization" below).
+Verified 2026-11-26 on Apple Silicon: installer exit 0 from a clean `HOME`,
+**manifest signature verified with stock ssh-keygen**, binary digest matched the
+signed manifest, binaries installed, `release-source.json` pinned to channel
+`stable` and key `14f5…`, `mycelium doctor` runs. A tampered manifest served
+from a local mirror is refused with `release manifest signature is not valid for
+the pinned signer`.
+
+Pinned manifest signer (in `install.sh`, rotate by reviewed commit):
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9wzQ7aEGWgxHnwuL90yrHHgMJDPScqR57hjmBFSQtw release@fpl.dev
+```
+
+Apple Gatekeeper will still warn because binaries are not notarized; the
+installer's `xattr` handling is a separate step (see "Notarization" below).
 
 ### Recovery
 
